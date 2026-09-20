@@ -1,0 +1,13 @@
+[package]
+name = "rupix"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# 本地 rgpui 源码：截图能力需要开启 screen-capture 特性。
+rgpui = { path = "../rgpui/crates/rgpui", features = ["screen-capture"] }
+rgpui-platform = { path = "../rgpui/crates/rgpui-platform", features = ["screen-capture"] }
+# 图片编解码与像素操作：首帧保存、选区裁剪、马赛克、导出 PNG。
+image = "0.25"
+# 字形光栅化：把文字标注烧录进导出图片（系统字体文件加载）。
+ab_glyph = "0.2"
