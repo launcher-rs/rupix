@@ -21,28 +21,22 @@ use crate::{
 /// 开始一次截屏流程（区域截图或全屏截图共用）。
 ///
 /// # 参数
-/// - `view`: 主视图实体，截取完成后通过它打开标注浮层并回写状态。
+/// - `state`: 主视图可变引用（调用方已持有实体租借，直接改状态，不要再 `update`）。
 /// - `window`: 发起截图的窗口，用于挂载后台任务。
 /// - `cx`: 主视图上下文。
 /// - `fullscreen`: 为 true 时浮层打开即选中全图，跳过手动选区。
 pub fn begin_capture(
-    view: rgpui::Entity<RupixApp>,
+    state: &mut RupixApp,
     window: &mut Window,
     cx: &mut Context<RupixApp>,
     fullscreen: bool,
 ) {
     // 同一时间只允许一轮截取，避免重复推流占用系统捕获会话。
-    let already = view.update(cx, |state, cx| {
-        if state.capturing {
-            return true;
-        }
-        state.capturing = true;
-        state.set_status("正在截取屏幕…", cx);
-        false
-    });
-    if already {
+    if state.capturing {
         return;
     }
+    state.capturing = true;
+    state.set_status("正在截取屏幕…", cx);
 
     // 浮层需要全屏尺寸：优先取主显示器边界，取不到则回退到居中默认尺寸。
     let display_bounds: Bounds<Pixels> = cx
@@ -54,8 +48,6 @@ pub fn begin_capture(
 
     // 捕获源枚举是异步 oneshot，先在 UI 线程拿到接收端，再挂后台任务等待。
     let sources_rx = cx.screen_capture_sources();
-    // 主实体提前克隆出来，异步完成后用它打开浮层并回写状态。
-    let main = view.clone();
     cx.spawn_in(window, async move |this, cx| {
         // 等待系统返回可捕获的屏幕 / 窗口列表。
         let sources: Vec<Rc<dyn ScreenCaptureSource>> = match sources_rx.await {
@@ -150,10 +142,11 @@ pub fn begin_capture(
             fullscreen,
         };
         // 在 UI 上下文打开全屏标注浮层，并恢复主视图状态。
+        // 注意：此处已在实体的单次租借内，直接改 `state`，不要再嵌套 `update`。
         let _ = this.update(cx, |state, cx| {
             state.capturing = false;
             state.set_status("已截取，正在标注…", cx);
-            open_overlay(main.clone(), cx, pending);
+            open_overlay(cx.entity(), cx, pending);
         });
     })
     .detach();

@@ -73,12 +73,13 @@ impl RupixApp {
 
     /// 发起区域截图（按钮 / 托盘 / 全局热键共用入口）。
     pub fn begin_region(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        begin_capture(cx.entity(), window, cx, false);
+        // 直接透传可变引用，`begin_capture` 内部不再二次租借实体。
+        begin_capture(self, window, cx, false);
     }
 
     /// 发起全屏截图（打开即全选，直接标注）。
     pub fn begin_full(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        begin_capture(cx.entity(), window, cx, true);
+        begin_capture(self, window, cx, true);
     }
 
     /// 快捷键录制框变化时自动应用新的全局热键。
