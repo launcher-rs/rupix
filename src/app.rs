@@ -1,14 +1,17 @@
-//! 主窗口模块：快捷键设置、截图入口、状态与最近保存记录。
+//! 设置窗口模块：快捷键设置、截图入口、状态与最近保存记录。
 //!
-//! 主窗口是 Rupix 的控制中心：截图本身发生在全屏浮层（`overlay`），
+//! 设置窗口是 Rupix 的控制中心：平时隐藏到托盘常驻，
+//! 截图本身发生在全屏浮层（`overlay`），预览标注在独立窗口（`viewer`），
 //! 这里只负责发起流程、配置全局热键，以及展示保存历史。
+//! 日常使用快捷键截图即可，无需打开本窗口。
 
 use crate::{
     capture::begin_capture,
     hotkey::{HotkeyKind, apply_global_hotkey, hotkey_value_to_string, save_hotkey_string},
+    viewer::{open_viewer, preview_from_path},
 };
 use rgpui::{
-    Context, Entity, Render, SharedString, Window,
+    Context, Entity, PathPromptOptions, Render, SharedString, Window,
     components::{HotkeyInput, HotkeyInputState, HotkeyValue},
     div,
     prelude::*,
@@ -108,6 +111,38 @@ impl RupixApp {
         begin_capture(self, window, cx, true);
     }
 
+    /// 从本地选择一张图片，用 Rupix 预览窗口做简单标注编辑。
+    ///
+    /// 原图只读打开，保存时另存为带时间戳的新文件，不会覆盖原图。
+    pub fn open_image_for_edit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        // 原生文件对话框走平台实现，选图后在异步任务里打开预览窗口。
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("选择要编辑的图片".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let Some(preview) = preview_from_path(&path) else {
+                // 非图片文件：回写设置窗口状态提示。
+                let _ = this.update(cx, |state, cx| {
+                    state.set_status("所选文件不是有效图片", cx);
+                });
+                return;
+            };
+            let _ = this.update(cx, |_, cx| {
+                open_viewer(cx.entity(), cx, preview);
+            });
+        })
+        .detach();
+    }
+
     /// 快捷键录制框变化时自动应用新的全局热键（区域 / 全屏各自独立）。
     fn on_hotkey_recorded(
         &mut self,
@@ -193,18 +228,18 @@ impl Render for RupixApp {
             .p_4()
             .bg(rgb(0xF7F7F7))
             .text_color(rgb(0x333333))
-            // 标题。
+            // 标题（设置窗口：平时隐藏到托盘）。
             .child(
                 div()
                     .flex()
                     .items_baseline()
                     .gap_2()
-                    .child(div().text_xl().child("Rupix · 拾景"))
+                    .child(div().text_xl().child("Rupix · 拾景 设置"))
                     .child(
                         div()
                             .text_xs()
                             .text_color(rgb(0x888888))
-                            .child("看到 → 截取 → 留存"),
+                            .child("关闭即隐藏到托盘 · 日常凭快捷键截图即可"),
                     ),
             )
             // 快捷键设置：区域 / 全屏各一张录制卡（录制后自动应用）。
@@ -254,11 +289,31 @@ impl Render for RupixApp {
                             .on_click(move |_, window, cx| {
                                 v.update(cx, |this, cx| this.begin_full(window, cx));
                             })
+                    })
+                    .child({
+                        let v = view.clone();
+                        div()
+                            .id("rupix-btn-open-image")
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .text_sm()
+                            .cursor_pointer()
+                            .bg(if capturing {
+                                rgb(0xC0C0C0)
+                            } else {
+                                rgb(0x6A5ACD)
+                            })
+                            .text_color(rgb(0xFFFFFF))
+                            .child("打开图片编辑…")
+                            .on_click(move |_, window, cx| {
+                                v.update(cx, |this, cx| this.open_image_for_edit(window, cx));
+                            })
                     }),
             )
-            // 使用提示。
+            // 使用提示（设置窗口平时隐藏，截图走快捷键 / 托盘）。
             .child(div().text_xs().text_color(rgb(0x888888)).child(
-                "区域截图：在全屏遮罩上拖拽框选，松手后进独立预览窗口（可缩放/复制/保存），右键/Esc 取消。",
+                "区域截图：在全屏遮罩上拖拽框选，松手后进独立预览窗口（可缩放/复制/保存，可底部状态栏查看结果），右键/Esc 取消。本窗口关闭即隐藏到托盘。",
             ))
             // 状态栏。
             .child(

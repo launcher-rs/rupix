@@ -16,3 +16,24 @@ ab_glyph = "0.2"
 # 调试面板透传：debug 构建默认启用检查器（F12）；
 # release 下默认剥离，如需保留用 `--features inspector` 显式开启。
 inspector = ["rgpui/inspector"]
+
+# release 优化：截图工具常驻后台，启动速度与包体积优先。
+[profile.release]
+# 最高优化等级，图片编解码与标注烧录受益明显。
+opt-level = 3
+# 全程序优化，跨 crate 内联（rgpui / image 均受益），链接稍慢可接受。
+lto = true
+# 单代码生成单元，配合 lto 进一步内联，牺牲并行编译速度换运行速度。
+codegen-units = 1
+# 剥离符号表，减小发布包体积。
+strip = true
+
+# Windows 双格式剪贴板（图片 + 文件）需要直接调用系统剪贴板 API，
+# rgpui 内建写剪贴板在 Windows 后端会忽略文件条目，故直接依赖 windows。
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_System_DataExchange",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
+] }

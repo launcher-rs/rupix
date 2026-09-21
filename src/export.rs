@@ -66,6 +66,162 @@ pub fn copy_png_to_clipboard(cx: &mut rgpui::App, png: &[u8]) -> Result<(), Stri
     Ok(())
 }
 
+/// 把 PNG 图片字节转换为 Windows DIB 字节（BITMAPINFOHEADER + 自下而上 BGRA）。
+///
+/// Word / 画图等优先认 CF_DIB，直接给 PNG（`PNG` 注册格式）部分旧程序认不出，
+/// 因此双格式复制时同时提供 DIB，兼容性最好。
+fn png_to_dib_bytes(png: &[u8]) -> Option<Vec<u8>> {
+    // 先解码为 RGBA，再逐像素转 BGRA 并上下翻转。
+    let img = image::load_from_memory(png).ok()?.into_rgba8();
+    let (w, h) = (img.width(), img.height());
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let mut dib = Vec::with_capacity(40 + (w as usize) * (h as usize) * 4);
+    // BITMAPINFOHEADER（40 字节）：宽、高、面数、位深、压缩、图像大小等。
+    dib.extend_from_slice(&40u32.to_le_bytes());
+    dib.extend_from_slice(&(w as i32).to_le_bytes());
+    dib.extend_from_slice(&(h as i32).to_le_bytes());
+    dib.extend_from_slice(&1u16.to_le_bytes());
+    dib.extend_from_slice(&32u16.to_le_bytes());
+    dib.extend_from_slice(&0u32.to_le_bytes());
+    dib.extend_from_slice(&(w * h * 4).to_le_bytes());
+    dib.extend_from_slice(&0i32.to_le_bytes());
+    dib.extend_from_slice(&0i32.to_le_bytes());
+    dib.extend_from_slice(&0u32.to_le_bytes());
+    dib.extend_from_slice(&0u32.to_le_bytes());
+    // 像素区：DIB 要求自下而上存储，通道顺序为 BGRA。
+    for y in (0..h).rev() {
+        for x in 0..w {
+            let p = img.get_pixel(x, y);
+            dib.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
+        }
+    }
+    Some(dib)
+}
+
+/// 按 Windows DROPFILES 结构拼出 CF_HDROP 字节。
+///
+/// 布局：pFiles(4) + pt.x(4) + pt.y(4) + fNC(4) + fWide(4) = 20 字节头，
+/// 之后是 UTF-16 文件路径（单 `\0` 分隔，末尾双 `\0` 结束）。
+fn hdrop_bytes(path: &Path) -> Option<Vec<u8>> {
+    // 路径转 UTF-16（Windows 用系统编码，非 Windows 用 lossy 兜底，单元测试可跑）。
+    #[cfg(target_os = "windows")]
+    let wide: Vec<u16> = {
+        use std::os::windows::ffi::OsStrExt as _;
+        path.as_os_str().encode_wide().chain([0, 0]).collect()
+    };
+    #[cfg(not(target_os = "windows"))]
+    let wide: Vec<u16> = path
+        .to_string_lossy()
+        .encode_utf16()
+        .chain([0, 0])
+        .collect();
+    if wide.len() < 2 {
+        return None;
+    }
+    let mut buf = Vec::with_capacity(20 + wide.len() * 2);
+    buf.extend_from_slice(&20u32.to_le_bytes());
+    buf.extend_from_slice(&0i32.to_le_bytes());
+    buf.extend_from_slice(&0i32.to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&1u32.to_le_bytes());
+    for unit in wide {
+        buf.extend_from_slice(&unit.to_le_bytes());
+    }
+    Some(buf)
+}
+
+/// 把 PNG 图片与图片文件同时写入剪贴板（Windows）：Word 等粘贴为图片，资源管理器粘贴为文件。
+///
+/// rgpui 内建 `write_to_clipboard` 在 Windows 后端会忽略文件条目，
+/// 一次只能二选一；此处直接调系统剪贴板 API，在同一次 `EmptyClipboard` 会话里
+/// 同时写入 PNG / DIB / HDROP 三种格式，两类粘贴目标各取所需。
+#[cfg(target_os = "windows")]
+pub fn copy_image_and_file_to_clipboard(png: &[u8], path: &Path) -> Result<(), String> {
+    use windows::Win32::System::{
+        DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW},
+        Ole::{CF_DIB, CF_HDROP},
+    };
+
+    if png.is_empty() {
+        return Err("图片数据为空".to_string());
+    }
+    if !path.is_file() {
+        return Err("剪贴板文件不存在".to_string());
+    }
+    // DIB 可选：生成失败仍可继续（PNG 格式多数程序也认），HDROP 必须成功。
+    let dib = png_to_dib_bytes(png);
+    let hdrop = hdrop_bytes(path).ok_or_else(|| "拼接文件剪贴板数据失败".to_string())?;
+
+    // 往剪贴板写一段字节（内存所有权成功后移交系统，失败才释放）。
+    fn set_bytes(data: &[u8], format: u32) -> Result<(), String> {
+        use windows::Win32::{
+            Foundation::HANDLE,
+            System::{
+                DataExchange::SetClipboardData,
+                Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
+            },
+        };
+        if data.is_empty() {
+            return Err("剪贴板数据为空".to_string());
+        }
+        unsafe {
+            let global = GlobalAlloc(GMEM_MOVEABLE, data.len())
+                .map_err(|e| format!("分配剪贴板内存失败：{e:?}"))?;
+            let ptr = GlobalLock(global);
+            if ptr.is_null() {
+                return Err("锁定剪贴板内存失败".to_string());
+            }
+            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
+            let _ = GlobalUnlock(global);
+            SetClipboardData(format, Some(HANDLE(global.0)))
+                .map_err(|e| format!("写入剪贴板失败：{e:?}"))?;
+            // HGLOBAL 是纯句柄（Copy 类型，无 RAII）：成功后内存归系统所有，
+            // 此处不再释放，函数返回即完成所有权移交。
+            Ok(())
+        }
+    }
+
+    // 剪贴板可能被其他程序短暂占用，重试几次。
+    let mut opened = false;
+    for _ in 0..8 {
+        if unsafe { OpenClipboard(None) }.is_ok() {
+            opened = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    if !opened {
+        return Err("打开系统剪贴板失败".to_string());
+    }
+    // 无论成功失败都要关闭剪贴板，用闭包包裹保证 CloseClipboard 一定执行。
+    let result = (|| {
+        unsafe { EmptyClipboard().map_err(|e| format!("清空剪贴板失败：{e:?}")) }?;
+        // 注册的 `PNG` 格式：Word / 浏览器认它，比 DIB 保真。
+        let png_format = unsafe { RegisterClipboardFormatW(windows::core::w!("PNG")) };
+        if png_format == 0 {
+            return Err("注册 PNG 剪贴板格式失败".to_string());
+        }
+        set_bytes(png, png_format)?;
+        // DIB：画图等旧程序认它，失败不阻断（PNG 已写入）。
+        if let Some(dib) = &dib {
+            let _ = set_bytes(dib, CF_DIB.0 as u32);
+        }
+        // HDROP：资源管理器认它，直接粘贴为文件。
+        set_bytes(&hdrop, CF_HDROP.0 as u32)?;
+        Ok(())
+    })();
+    let _ = unsafe { CloseClipboard() };
+    result
+}
+
+/// 把 PNG 图片与图片文件同时写入剪贴板，非 Windows 平台暂时回退为不支持。
+#[cfg(not(target_os = "windows"))]
+pub fn copy_image_and_file_to_clipboard(_png: &[u8], _path: &Path) -> Result<(), String> {
+    Err("当前平台暂不支持复制为文件".to_string())
+}
+
 /// 把图片文件作为“文件项”写入系统剪贴板，便于在资源管理器目录中直接粘贴。
 ///
 /// # 参数
@@ -522,5 +678,34 @@ mod tests {
         let out = render_export(&base, sel, &shapes, &font);
         assert_eq!(out.dimensions(), (100, 80));
         assert!(png_bytes(&out).is_some());
+    }
+
+    /// PNG 转 DIB：头尺寸与像素区断言（2x1 小图手算验证）。
+    #[test]
+    fn png_to_dib_layout() {
+        // 2x1 纯红图，注意 DIB 自下而上、BGR 通道。
+        let img = RgbaImage::from_pixel(2, 1, Rgba([255, 0, 0, 255]));
+        let mut buf = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        let dib = png_to_dib_bytes(&buf).expect("应生成 DIB");
+        assert_eq!(dib.len(), 40 + 2 * 4);
+        assert_eq!(&dib[0..4], &40u32.to_le_bytes());
+        assert_eq!(&dib[4..8], &2i32.to_le_bytes());
+        assert_eq!(&dib[8..12], &1i32.to_le_bytes());
+        // 第一像素 BGR 应为 [0, 0, 255, 255]。
+        assert_eq!(&dib[40..44], &[0, 0, 255, 255]);
+    }
+
+    /// HDROP 字节：头字段与双零结尾断言。
+    #[test]
+    fn hdrop_layout() {
+        let path = std::path::Path::new("C:\\temp\\a.png");
+        let bytes = hdrop_bytes(path).expect("应生成 HDROP");
+        assert_eq!(&bytes[0..4], &20u32.to_le_bytes());
+        assert_eq!(&bytes[16..20], &1u32.to_le_bytes());
+        // 末尾必须是 UTF-16 双零（4 个零字节）。
+        assert_eq!(&bytes[bytes.len() - 4..], &[0, 0, 0, 0]);
     }
 }

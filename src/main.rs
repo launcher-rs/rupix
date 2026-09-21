@@ -53,11 +53,19 @@ fn main() {
         let region_for_build = region_hotkey.clone();
         let full_for_build = full_hotkey.clone();
         // 两张热键卡片比原来高，默认窗口加高。
-        let bounds = Bounds::centered(None, size(px(560.), px(800.)), cx);
+        let bounds = Bounds::centered(None, size(px(560.), px(490.)), cx);
         let main_win: WindowHandle<RupixApp> = cx
             .open_window(
                 rgpui::WindowOptions {
                     window_bounds: Some(rgpui::WindowBounds::Windowed(bounds)),
+                    titlebar: Some(rgpui::TitlebarOptions {
+                        title: Some("Rupix 设置".into()),
+                        ..Default::default()
+                    }),
+                    // 设置窗口平时不需要显示：启动即隐藏到托盘，
+                    // 用户经托盘菜单 / 图标点击再打开，快捷键截图不受影响。
+                    show: false,
+                    focus: false,
                     ..Default::default()
                 },
                 move |window, cx| {
@@ -87,7 +95,7 @@ fn main() {
         let full_result = hotkey::apply_global_hotkey(cx, HotkeyKind::Full, &full_hotkey);
         let boot_msg = match (&region_result, &full_result) {
             (Ok(()), Ok(())) => {
-                format!("全局截图：区域 {region_hotkey}，全屏 {full_hotkey}")
+                format!("就绪：区域 {region_hotkey}，全屏 {full_hotkey}（窗口已隐藏到托盘）")
             }
             (Err(error), _) | (_, Err(error)) => error.clone(),
         };

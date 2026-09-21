@@ -31,7 +31,8 @@ use crate::{
     app::{PreviewImage, RupixApp},
     capture::cap_log,
     export::{
-        copy_file_to_clipboard, copy_png_to_clipboard, load_system_font, png_bytes, render_export,
+        copy_image_and_file_to_clipboard, copy_png_to_clipboard, load_system_font, png_bytes,
+        render_export,
     },
     shapes::{AnnoColor, PixelRect, Shape},
 };
@@ -46,6 +47,8 @@ const ZOOM_STEP: f32 = 1.25;
 const ROW_H: f32 = 44.0;
 /// 工具条总高度（三排：查看 / 工具 / 颜色线宽）。
 const TOOLBAR_H: f32 = ROW_H * 3.0;
+/// 底部状态栏高度（逻辑像素）。
+const STATUS_H: f32 = 30.0;
 /// 画笔默认线宽（图片像素）。
 const DEFAULT_WIDTH: f32 = 4.0;
 /// 文字标注默认字号（图片像素）。
@@ -99,6 +102,10 @@ enum ViewerAction {
     TextBg,
     /// 展开 / 收起自定义颜色选择器。
     ToggleColorPicker,
+    /// 打开最近一次保存的文件（系统默认程序）。
+    OpenSavedFile,
+    /// 打开最近一次保存文件所在目录（系统文件管理器）。
+    OpenSavedDir,
 }
 
 /// 打开图片预览窗口。
@@ -126,7 +133,8 @@ pub fn open_viewer<T: 'static>(main: Entity<RupixApp>, cx: &mut Context<T>, prev
         "预览窗口打开：img={}x{} fit={fit:.2}",
         preview.w, preview.h
     ));
-    let bounds = Bounds::centered(None, size(px(win_w), px(win_h + TOOLBAR_H)), cx);
+    // 窗口高度 = 顶部三排工具条 + 图片区 + 底部状态栏。
+    let bounds = Bounds::centered(None, size(px(win_w), px(win_h + TOOLBAR_H + STATUS_H)), cx);
     let opened = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -144,6 +152,113 @@ pub fn open_viewer<T: 'static>(main: Entity<RupixApp>, cx: &mut Context<T>, prev
                 ImageViewer::new(window, cx, main.clone(), preview.clone(), fit, win_w, win_h)
             });
             // 打开即聚焦，Esc / 快捷键立即可用。
+            let handle = view.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+            view
+        },
+    );
+    if let Err(error) = opened {
+        cap_log(&format!("预览窗口打开失败：{error:?}"));
+    }
+}
+
+/// 从本地图片路径构建预览信息（校验文件有效性）。
+///
+/// # 参数
+/// - `path`: 用户选择的图片文件路径。
+///
+/// # 返回
+/// 有效图片返回 `Some(PreviewImage)`，非图片 / 不存在返回 `None`。
+pub fn preview_from_path(path: &std::path::Path) -> Option<PreviewImage> {
+    // 先确认是文件，再读图片尺寸（不支持的格式直接返回 None）。
+    if !path.is_file() {
+        return None;
+    }
+    let (w, h) = image::image_dimensions(path).ok()?;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    Some(PreviewImage {
+        path: path.to_path_buf(),
+        w,
+        h,
+    })
+}
+
+/// 从 `App` 上下文打开本地图片编辑（托盘菜单入口用）。
+///
+/// 原生文件对话框选图后，用预览窗口打开做标注；保存时另存新文件，不覆盖原图。
+///
+/// # 参数
+/// - `main`: 设置窗口实体（保存历史回写用）。
+/// - `cx`: 应用上下文。
+pub fn open_image_for_edit_in_app(main: Entity<RupixApp>, cx: &mut rgpui::App) {
+    // 原生打开对话框：只选单个图片文件。
+    let receiver = cx.prompt_for_paths(rgpui::PathPromptOptions {
+        files: true,
+        directories: false,
+        multiple: false,
+        prompt: Some("选择要编辑的图片".into()),
+    });
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(paths))) = receiver.await else {
+            return;
+        };
+        let Some(path) = paths.into_iter().next() else {
+            return;
+        };
+        let Some(preview) = preview_from_path(&path) else {
+            // 非图片：回写设置窗口状态，提示用户。
+            cx.update(|cx| {
+                cx.update_entity(&main, |state, cx| {
+                    state.set_status("所选文件不是有效图片", cx);
+                });
+            });
+            return;
+        };
+        cx.update(|cx| {
+            open_viewer_in_app(main.clone(), cx, preview);
+        });
+    })
+    .detach();
+}
+
+/// 从 `App` 上下文直接按路径打开预览窗口（异步选图任务内部用）。
+fn open_viewer_in_app(main: Entity<RupixApp>, cx: &mut rgpui::App, preview: PreviewImage) {
+    // 自适应算法与 `open_viewer` 一致，窗口含三排工具条 + 底部状态栏。
+    let (disp_w, disp_h) = cx
+        .primary_display()
+        .map(|d| {
+            let s = d.bounds().size;
+            (s.width.as_f32(), s.height.as_f32())
+        })
+        .unwrap_or((1920.0, 1080.0));
+    let fit = ((disp_w * 0.75) / preview.w as f32)
+        .min((disp_h * 0.75 - TOOLBAR_H) / preview.h as f32)
+        .clamp(MIN_ZOOM, 1.0);
+    let win_w = (preview.w as f32 * fit).round().max(480.0);
+    let win_h = (preview.h as f32 * fit).round().max(200.0);
+    cap_log(&format!(
+        "预览窗口打开（本地图片）：img={}x{} fit={fit:.2}",
+        preview.w, preview.h
+    ));
+    let bounds = Bounds::centered(None, size(px(win_w), px(win_h + TOOLBAR_H + STATUS_H)), cx);
+    let opened = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions {
+                title: Some(SharedString::from(format!(
+                    "Rupix 预览（{} × {}）",
+                    preview.w, preview.h
+                ))),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        move |window, cx| {
+            let view = cx.new(|cx| {
+                ImageViewer::new(window, cx, main.clone(), preview.clone(), fit, win_w, win_h)
+            });
             let handle = view.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
             view
@@ -224,6 +339,10 @@ struct ImageViewer {
     font_loaded: bool,
     /// 根视图焦点（键盘快捷键用）。
     focus_handle: FocusHandle,
+    /// 底部状态栏文本（复制 / 保存结果就近显示，不依赖设置窗口）。
+    status: SharedString,
+    /// 最近一次保存的文件路径（状态栏“打开文件 / 打开目录”用）。
+    last_saved: Option<PathBuf>,
 }
 
 /// 文字工具正在编辑的状态：点击图片后出现，回车或失焦提交。
@@ -292,7 +411,15 @@ impl ImageViewer {
             font: None,
             font_loaded: false,
             focus_handle: cx.focus_handle(),
+            status: SharedString::from("就绪"),
+            last_saved: None,
         }
+    }
+
+    /// 设置预览窗口底部状态栏并刷新（复制 / 保存结果就近显示）。
+    fn set_viewer_status(&mut self, msg: &str, cx: &mut Context<Self>) {
+        self.status = SharedString::from(msg.to_string());
+        cx.notify();
     }
 
     /// 工具条按钮（文案 + 动作，id 保证唯一）。
@@ -415,6 +542,20 @@ impl ImageViewer {
             ViewerAction::ToggleColorPicker => {
                 self.show_color_picker = !self.show_color_picker;
                 cx.notify();
+            }
+            ViewerAction::OpenSavedFile => {
+                // 用系统默认程序打开最近保存的文件。
+                if let Some(path) = self.last_saved.clone() {
+                    cx.open_with_system(&path);
+                }
+            }
+            ViewerAction::OpenSavedDir => {
+                // 打开所在目录：文件管理器选中文件需平台命令，这里打开目录即可。
+                if let Some(path) = self.last_saved.clone()
+                    && let Some(dir) = path.parent()
+                {
+                    cx.open_with_system(dir);
+                }
             }
         }
     }
@@ -785,45 +926,75 @@ impl ImageViewer {
         Some(render_export(&base, full, &self.shapes, &self.font))
     }
 
-    /// 复制烧录图到系统剪贴板，并优先作为文件项支持资源管理器粘贴。
+    /// 复制烧录图到系统剪贴板：图片与文件双格式，Word 粘贴为图片、文件夹粘贴为文件。
     fn copy_image(&mut self, cx: &mut Context<Self>) {
         let main = self.main.clone();
-        let png = if self.shapes.is_empty() {
-            std::fs::read(&self.preview.path).map_err(|error| format!("读取图片失败：{error}"))
-        } else {
-            self.burn_shapes()
-                .and_then(|img| png_bytes(&img))
-                .ok_or_else(|| "导出图片失败".to_string())
-        };
-
-        let result = png.and_then(|png| {
-            let path = clipboard_png_path();
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|error| format!("创建缓存目录失败：{error}"))?;
-            }
-            std::fs::write(&path, &png).map_err(|error| format!("写入剪贴板文件失败：{error}"))?;
-
-            match copy_file_to_clipboard(&path) {
-                Ok(()) => Ok("已复制为图片文件，可在文件夹中粘贴".to_string()),
-                Err(file_error) => {
-                    // 文件剪贴板失败时仍保留旧的图片剪贴板能力，避免复制按钮完全不可用。
-                    copy_png_to_clipboard(cx, &png)
-                        .map(|()| format!("已复制图片；文件粘贴不可用：{file_error}"))
+        // 先拿到 PNG 字节与对应的文件路径：无标注直接读底图文件，
+        // 有标注则烧录后落到剪贴板缓存文件（HDROP 目标必须是一个真实存在的文件）。
+        let (png, file_path) = if self.shapes.is_empty() {
+            match std::fs::read(&self.preview.path) {
+                Ok(bytes) => (Some(bytes), self.preview.path.clone()),
+                Err(error) => {
+                    self.set_viewer_status(&format!("复制失败：读取图片失败：{error}"), cx);
+                    return;
                 }
             }
-        });
+        } else {
+            let Some(img) = self.burn_shapes() else {
+                self.set_viewer_status("复制失败：导出图片失败", cx);
+                return;
+            };
+            let Some(bytes) = png_bytes(&img) else {
+                self.set_viewer_status("复制失败：导出图片失败", cx);
+                return;
+            };
+            let path = clipboard_png_path();
+            if let Some(parent) = path.parent()
+                && let Err(error) = std::fs::create_dir_all(parent)
+            {
+                self.set_viewer_status(&format!("复制失败：创建缓存目录失败：{error}"), cx);
+                return;
+            }
+            if let Err(error) = std::fs::write(&path, &bytes) {
+                self.set_viewer_status(&format!("复制失败：写入剪贴板文件失败：{error}"), cx);
+                return;
+            }
+            (Some(bytes), path)
+        };
+        let png = png.expect("PNG 字节应在上一步就绪");
 
-        main.update(cx, |state, cx| match result {
-            Ok(message) => state.set_status(&message, cx),
-            Err(error) => state.set_status(&format!("复制失败：{error}"), cx),
-        });
+        // 双格式写入：一次搞定图片粘贴（Word / 画图）与文件粘贴（资源管理器）。
+        match copy_image_and_file_to_clipboard(&png, &file_path) {
+            Ok(()) => {
+                let msg = "已复制：在 Word/画图中粘贴为图片，在文件夹中粘贴为文件";
+                self.set_viewer_status(msg, cx);
+                let msg = msg.to_string();
+                main.update(cx, |state, cx| state.set_status(&msg, cx));
+            }
+            Err(file_error) => {
+                // 双格式失败时回退到纯图片复制，保证 Word 粘贴仍可用。
+                match copy_png_to_clipboard(cx, &png) {
+                    Ok(()) => {
+                        let msg = format!("已复制为图片；文件粘贴不可用：{file_error}");
+                        self.set_viewer_status(&msg, cx);
+                        main.update(cx, |state, cx| state.set_status(&msg, cx));
+                    }
+                    Err(error) => {
+                        self.set_viewer_status(&format!("复制失败：{error}"), cx);
+                        main.update(cx, |state, cx| {
+                            state.set_status(&format!("复制失败：{error}"), cx);
+                        });
+                    }
+                }
+            }
+        }
         cx.refresh_windows();
     }
 
-    /// 保存烧录图到桌面并记入最近文件。
+    /// 保存烧录图到桌面并记入最近文件（结果就近显示在预览底部状态栏）。
     fn save_image(&mut self, cx: &mut Context<Self>) {
         let main = self.main.clone();
+        // 保存永远另存为带时间戳的新文件，不覆盖原图（本地打开编辑的原图同样受保护）。
         let dst = save_dir().join(format!(
             "rupix-{}.png",
             std::time::SystemTime::now()
@@ -839,11 +1010,20 @@ impl ImageViewer {
                 .is_some()
         };
         if saved {
+            // 状态栏就近显示保存位置，并提供打开文件 / 打开目录快捷入口。
+            let name = dst
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("图片")
+                .to_string();
+            self.last_saved = Some(dst.clone());
+            self.set_viewer_status(&format!("已保存 {name}（桌面）"), cx);
             let msg = format!("已保存 {}", dst.display());
             main.update(cx, |state, cx| {
                 state.push_recent(dst, msg, cx);
             });
         } else {
+            self.set_viewer_status("保存失败", cx);
             main.update(cx, |state, cx| {
                 state.set_status("保存失败", cx);
             });
@@ -1596,5 +1776,61 @@ impl Render for ImageViewer {
                     area
                 }
             })
+            // 底部状态栏：复制 / 保存结果就近显示 + 图片信息。
+            .child(self.status_bar(cx))
+    }
+}
+
+impl ImageViewer {
+    /// 底部状态栏（复制 / 保存反馈 + 图片信息 + 已保存快捷入口）。
+    fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // 右侧图片信息：尺寸 / 缩放 / 标注数，一目了然。
+        let info = format!(
+            "{} × {} · {}% · {} 个标注",
+            self.preview.w,
+            self.preview.h,
+            (self.zoom * 100.0).round() as u32,
+            self.shapes.len()
+        );
+        let mut row = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .h(px(STATUS_H))
+            .px_3()
+            .bg(rgb(0x252525))
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .text_xs()
+                    .text_color(rgb(0xBBBBBB))
+                    .child(self.status.to_string()),
+            );
+        // 保存成功后才出现快捷入口：打开文件 / 打开目录。
+        if self.last_saved.is_some() {
+            row = row
+                .child(self.mini_button(
+                    cx,
+                    "open-saved-file",
+                    "打开文件",
+                    ViewerAction::OpenSavedFile,
+                    false,
+                ))
+                .child(self.mini_button(
+                    cx,
+                    "open-saved-dir",
+                    "打开目录",
+                    ViewerAction::OpenSavedDir,
+                    false,
+                ));
+        }
+        row.child(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(rgb(0x888888))
+                .child(info),
+        )
     }
 }
