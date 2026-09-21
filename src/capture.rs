@@ -150,6 +150,8 @@ pub fn begin_capture(
         // 从伴随的 .size 文件读回图片尺寸。
         let (img_w, img_h) = read_frame_size(&frame_path).unwrap_or((0, 0));
         cap_log(&format!("首帧尺寸 {img_w}x{img_h}"));
+        // 首帧提前解码为 RenderImage（耗时挪到“正在截取”阶段），浮层首帧立现。
+        let frame_image = decode_frame_image(&frame_path);
         // 在 UI 上下文恢复主视图状态，并按模式分流。
         // 注意：此处已在实体的单次租借内，直接改 `state`，不要再嵌套 `update`。
         let updated = this
@@ -176,6 +178,7 @@ pub fn begin_capture(
                             img_w,
                             img_h,
                             display_bounds,
+                            frame_image,
                         },
                     );
                 }
@@ -238,6 +241,26 @@ fn pick_main_source(
         }
     }
     None
+}
+
+/// 把首帧 PNG 解码为可直接渲染的 `RenderImage`（与 rgpui 内置 img 解码一致）。
+///
+/// 开窗前在后台做掉：解码耗时（debug 下约半秒）发生在“正在截取”阶段，
+/// 浮层首帧即可呈现冻结图，不会出现先透活屏、半秒后才变灰的闪烁。
+/// 解码失败返回 None，调用方回退到路径异步加载。
+fn decode_frame_image(frame_path: &std::path::Path) -> Option<Arc<rgpui::RenderImage>> {
+    // 读盘失败或格式非法都按 None 处理，不阻断截图流程。
+    let bytes = std::fs::read(frame_path).ok()?;
+    let mut rgba = image::load_from_memory(&bytes).ok()?.into_rgba8();
+    // 与 rgpui img 解码一致：RGBA 转 BGRA。
+    let (chunks, _) = rgba.as_chunks_mut::<4>();
+    for pixel in chunks {
+        pixel.swap(0, 2);
+    }
+    // Vec<Frame> 经 From 直接转 SmallVec，不引入新依赖。
+    Some(Arc::new(rgpui::RenderImage::new(vec![image::Frame::new(
+        rgba,
+    )])))
 }
 
 /// 读取首帧伴随的尺寸文件（`宽x高` 文本）。

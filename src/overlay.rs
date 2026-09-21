@@ -1,14 +1,15 @@
-//! 区域选择浮层：在全屏薄遮罩上拖拽画矩形，抬手即裁剪并回主窗口展示。
+//! 区域选择浮层：先冻结一张全屏图盖住屏幕，再在上面拖拽画矩形裁剪。
 //!
-//! 刻意只用纯色 `div` 拼界面（遮罩条 / 选区边框 / 徽标），不放底图、不放
-//! `canvas`：浮层窗口本身透明，真实屏幕即底图，所见即所得。
+//! 与系统截图 / Snipaste 一致：浮层显示的是截取瞬间的静态首帧（1:1 物理像素），
+//! 而不是透明活背景——视频等动态内容会被定住，框选与裁剪严格对应同一帧。
+//! 界面只用 `img` + 纯色 `div`（遮罩条 / 边框 / 徽标），不用 `canvas`。
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use rgpui::{
     Bounds, Context, Entity, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Render, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowKind, WindowOptions, div, prelude::*, px, rgb, rgba,
+    MouseMoveEvent, MouseUpEvent, Pixels, Render, RenderImage, Window, WindowBackgroundAppearance,
+    WindowBounds, WindowKind, WindowOptions, div, img, prelude::*, px, rgb, rgba,
 };
 
 use crate::{
@@ -27,6 +28,8 @@ pub struct PendingCapture {
     pub img_h: u32,
     /// 浮层窗口尺寸（取主显示器边界）。
     pub display_bounds: Bounds<Pixels>,
+    /// 预解码的首帧（同步图片源用；None 时回退路径异步加载）。
+    pub frame_image: Option<Arc<RenderImage>>,
 }
 
 /// 打开区域选择浮层。
@@ -45,6 +48,7 @@ pub fn open_overlay(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, pending:
     let PendingCapture {
         frame_path,
         display_bounds,
+        frame_image,
         ..
     } = pending;
     cap_log(&format!(
@@ -73,6 +77,7 @@ pub fn open_overlay(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, pending:
                     img_w,
                     img_h,
                     display_bounds,
+                    frame_image.clone(),
                 )
             });
             // 浮层打开即聚焦根视图，使 Esc 立即可用。
@@ -93,6 +98,8 @@ struct SelectView {
     main: Entity<RupixApp>,
     /// 首帧图片路径（裁剪来源）。
     frame_path: PathBuf,
+    /// 预解码的首帧（浮层背景同步显示用）。
+    frame_image: Option<Arc<RenderImage>>,
     /// 全图宽（图片像素）。
     img_w: u32,
     /// 全图高（图片像素）。
@@ -120,10 +127,12 @@ impl SelectView {
         img_w: u32,
         img_h: u32,
         display_bounds: Bounds<Pixels>,
+        frame_image: Option<Arc<RenderImage>>,
     ) -> Self {
         Self {
             main,
             frame_path,
+            frame_image,
             img_w,
             img_h,
             view_w: display_bounds.size.width.as_f32(),
@@ -202,6 +211,7 @@ impl SelectView {
                 state.set_status("已取消", cx);
             });
             window.remove_window();
+            cx.refresh_windows();
             return;
         };
         // 换算到图片物理像素并钳制在图内。
@@ -230,6 +240,9 @@ impl SelectView {
             }
         }
         window.remove_window();
+        // 强制刷新所有窗口：跨窗口 update 的重画请求可能随浮层关闭丢失，
+        // 主窗口按钮颜色 / 状态栏靠这次刷新落定（变灰 bug 即源于此）。
+        cx.refresh_windows();
     }
 
     /// 取消本次截图：复位状态机并关闭浮层。
@@ -240,6 +253,8 @@ impl SelectView {
             state.set_status("已取消", cx);
         });
         window.remove_window();
+        // 同 finish：保证主窗口重画，不残留“截取中”灰按钮。
+        cx.refresh_windows();
     }
 }
 
@@ -293,6 +308,20 @@ impl Render for SelectView {
         let mut root = div()
             .size_full()
             .relative()
+            // 底层：冻结的首帧全屏图（逻辑尺寸铺满窗口即 1:1 物理像素，
+            // 鼠标坐标 × scale 即图片像素，无近似）。
+            // 预解码同步源首帧立现；解码失败才回退路径异步加载（会闪一下）。
+            .child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .child(match self.frame_image.clone() {
+                        Some(pre) => img(pre).w(px(self.view_w)).h(px(self.view_h)),
+                        None => img(self.frame_path.clone())
+                            .w(px(self.view_w))
+                            .h(px(self.view_h)),
+                    }),
+            )
             // 根视图可聚焦，使 Esc 在浮层打开后立即可用。
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {

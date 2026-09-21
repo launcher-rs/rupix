@@ -252,6 +252,8 @@ impl ImageViewer {
                 state.set_status(&format!("读取图片失败：{error}"), cx);
             }),
         }
+        // 跨窗口回写主状态后强制刷新，保证状态栏落定。
+        cx.refresh_windows();
     }
 
     /// 保存到桌面并记入最近文件。
@@ -275,6 +277,8 @@ impl ImageViewer {
                 state.set_status(&format!("保存失败：{error}"), cx);
             }),
         }
+        // 跨窗口回写（最近文件 / 状态）后强制刷新，保证主窗口落定。
+        cx.refresh_windows();
     }
 }
 
