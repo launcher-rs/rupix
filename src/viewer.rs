@@ -3,7 +3,7 @@
 //! - 打开时按显示器 75% 区域自适应图片大小，之后窗口固定；
 //! - 缩放只改变图片大小（图片居中，超出可拖拽平移），窗口不再跟随变化；
 //! - 第一排：缩小 / 放大 / 适应 / 复制 / 保存 / 关闭；
-//! - 第二排：选择 / 矩形 / 椭圆 / 箭头 / 画笔 / 马赛克 / 文字 / 撤销 / 重做；
+//! - 第二排：选择 / 矩形 / 椭圆 / 箭头 / 画笔 / 荧光笔 / 橡皮擦 / 马赛克 / 文字 / 撤销 / 重做；
 //! - 第三排：颜色 / 线宽 / 文字背景开关 / 操作提示；
 //! - 标注画在覆盖图片的 `canvas` 上实时预览，
 //!   保存 / 复制时经 `export::render_export` 烧录为同一坐标系的最终图；
@@ -51,6 +51,8 @@ const TOOLBAR_H: f32 = ROW_H * 3.0;
 const STATUS_H: f32 = 30.0;
 /// 画笔默认线宽（图片像素）。
 const DEFAULT_WIDTH: f32 = 4.0;
+/// 橡皮擦半径（图片像素，画笔类额外叠加自身半宽）。
+const ERASER_RADIUS: f32 = 8.0;
 /// 文字标注默认字号（图片像素）。
 const DEFAULT_TEXT_SIZE: f32 = 28.0;
 
@@ -67,6 +69,10 @@ enum AnnoTool {
     Arrow,
     /// 自由画笔。
     Pen,
+    /// 荧光笔：半透明粗线高亮（导出时自动半透明加粗）。
+    Highlighter,
+    /// 橡皮擦：点击 / 拖动删除命中的标注。
+    Eraser,
     /// 马赛克：矩形区域打码。
     Mosaic,
     /// 文字（点选落点，内容取输入框）。
@@ -333,6 +339,8 @@ struct ImageViewer {
     drag_shape: Option<DragShape>,
     /// 选择工具悬停时是否命中已有标注（用于切换鼠标形状）。
     hover_shape: bool,
+    /// 橡皮擦拖动中（抬起鼠标结束，期间移动持续删除）。
+    erasing: bool,
     /// 缓存的系统字体（文字烧录用，懒加载）。
     font: Option<FontVec>,
     /// 字体是否已尝试加载（避免每次保存都读盘）。
@@ -408,6 +416,7 @@ impl ImageViewer {
             drag_text: None,
             drag_shape: None,
             hover_shape: false,
+            erasing: false,
             font: None,
             font_loaded: false,
             focus_handle: cx.focus_handle(),
@@ -522,6 +531,7 @@ impl ImageViewer {
                 self.anchor = None;
                 self.drag_text = None;
                 self.drag_shape = None;
+                self.erasing = false;
                 self.hover_shape = false;
                 cx.notify();
             }
@@ -572,6 +582,19 @@ impl ImageViewer {
     fn redo(&mut self, cx: &mut Context<Self>) {
         if let Some(shape) = self.redo_stack.pop() {
             self.shapes.push(shape);
+            cx.notify();
+        }
+    }
+
+    /// 橡皮擦删除落点命中的标注（一次删光重叠的，删后清空重做栈）。
+    fn erase_at(&mut self, p: (f32, f32), cx: &mut Context<Self>) {
+        let mut removed = false;
+        while let Some(idx) = erase_hit(&self.shapes, p, ERASER_RADIUS) {
+            self.shapes.remove(idx);
+            removed = true;
+        }
+        if removed {
+            self.redo_stack.clear();
             cx.notify();
         }
     }
@@ -647,6 +670,16 @@ impl ImageViewer {
                 self.drag_shape = Some(DragShape { idx, last: p });
                 self.redo_stack.clear();
                 cx.notify();
+                return;
+            }
+            self.on_pan_down(ev, cx);
+            return;
+        }
+        // 橡皮擦：按下即删落点标注，拖动持续删除（抬起结束）。
+        if self.tool == AnnoTool::Eraser {
+            if let Some(p) = self.to_image(ev.position).filter(|p| self.in_image(*p)) {
+                self.erasing = true;
+                self.erase_at(p, cx);
                 return;
             }
             self.on_pan_down(ev, cx);
@@ -740,16 +773,28 @@ impl ImageViewer {
                 color,
                 width,
             },
+            AnnoTool::Highlighter => Shape::Highlighter {
+                pts: vec![p],
+                color,
+                width,
+            },
             AnnoTool::Mosaic => Shape::Mosaic {
                 rect: PixelRect::from_points(p, p),
             },
-            AnnoTool::Select | AnnoTool::Text => return,
+            AnnoTool::Select | AnnoTool::Text | AnnoTool::Eraser => return,
         });
         cx.notify();
     }
 
     /// 鼠标移动：移动标注、Ctrl+拖动文字、选择工具平移、其他工具更新草稿。
     fn on_anno_move(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
+        // 橡皮擦拖动中：沿途删除命中的标注。
+        if self.erasing {
+            if let Some(p) = self.to_image(ev.position).filter(|p| self.in_image(*p)) {
+                self.erase_at(p, cx);
+            }
+            return;
+        }
         // 选择工具拖动标注：按图片像素增量平移，并尽量限制在图内。
         if self.drag_shape.is_some() {
             let Some(mut p) = self.to_image(ev.position) else {
@@ -816,7 +861,7 @@ impl ImageViewer {
                 *rect = PixelRect::from_points(anchor, p);
             }
             Some(Shape::Arrow { to, .. }) => *to = p,
-            Some(Shape::Pen { pts, .. }) => {
+            Some(Shape::Pen { pts, .. }) | Some(Shape::Highlighter { pts, .. }) => {
                 if pts.last() != Some(&p) {
                     pts.push(p);
                 }
@@ -828,6 +873,12 @@ impl ImageViewer {
 
     /// 左键抬起：选择工具结束移动 / 平移，Ctrl+拖动文字结束，其他工具提交草稿。
     fn on_anno_up(&mut self, cx: &mut Context<Self>) {
+        // 橡皮擦拖动结束。
+        if self.erasing {
+            self.erasing = false;
+            cx.notify();
+            return;
+        }
         // 选择工具移动标注结束。
         if self.drag_shape.take().is_some() {
             cx.notify();
@@ -1156,6 +1207,42 @@ fn move_shape(shape: &mut Shape, delta: (f32, f32)) {
     }
 }
 
+/// 橡皮擦命中判定：返回最顶层被命中标注的索引（后画的在上层，先删它）。
+///
+/// - 画笔 / 荧光笔：点到笔迹折线的距离 ≤ `radius + 线宽/2` 即命中；
+/// - 其余：落点在外包矩形内即命中。
+fn erase_hit(shapes: &[Shape], p: (f32, f32), radius: f32) -> Option<usize> {
+    shapes.iter().enumerate().rev().find_map(|(i, shape)| {
+        let hit = match shape {
+            Shape::Pen { pts, width, .. } | Shape::Highlighter { pts, width, .. } => {
+                stroke_distance(pts, p) <= radius + width / 2.0
+            }
+            _ => shape.bbox().contains(p),
+        };
+        hit.then_some(i)
+    })
+}
+
+/// 点到折线的最短距离（单点退化为点距，空笔迹返回无穷大）。
+fn stroke_distance(pts: &[(f32, f32)], p: (f32, f32)) -> f32 {
+    if pts.is_empty() {
+        return f32::INFINITY;
+    }
+    if pts.len() == 1 {
+        return (p.0 - pts[0].0).hypot(p.1 - pts[0].1);
+    }
+    pts.windows(2)
+        .map(|pair| {
+            let (ax, ay) = pair[0];
+            let (bx, by) = pair[1];
+            let dx = bx - ax;
+            let dy = by - ay;
+            let t = (((p.0 - ax) * dx + (p.1 - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+            (p.0 - (ax + t * dx)).hypot(p.1 - (ay + t * dy))
+        })
+        .fold(f32::INFINITY, f32::min)
+}
+
 /// 移动标注并尽量限制在图片范围内，避免一拖就把标注完全拖出画面。
 fn move_shape_clamped(shape: &mut Shape, delta: (f32, f32), img_w: f32, img_h: f32) {
     let bbox = shape.bbox();
@@ -1459,6 +1546,20 @@ impl Render for ImageViewer {
                     ))
                     .child(self.mini_button(
                         cx,
+                        "tool-highlighter",
+                        "荧光笔",
+                        ViewerAction::Tool(AnnoTool::Highlighter),
+                        self.tool == AnnoTool::Highlighter,
+                    ))
+                    .child(self.mini_button(
+                        cx,
+                        "tool-eraser",
+                        "橡皮擦",
+                        ViewerAction::Tool(AnnoTool::Eraser),
+                        self.tool == AnnoTool::Eraser,
+                    ))
+                    .child(self.mini_button(
+                        cx,
                         "tool-mosaic",
                         "马赛克",
                         ViewerAction::Tool(AnnoTool::Mosaic),
@@ -1555,6 +1656,16 @@ impl Render for ImageViewer {
                                 .text_xs()
                                 .text_color(rgb(0x999999))
                                 .child("拖动标注移动 · 空白处拖动画布")
+                        } else if self.tool == AnnoTool::Eraser {
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x999999))
+                                .child("点击 / 拖动删除命中的标注")
+                        } else if self.tool == AnnoTool::Highlighter {
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x999999))
+                                .child("拖动涂抹高亮（半透明粗线）")
                         } else {
                             div()
                                 .text_xs()
@@ -1583,10 +1694,12 @@ impl Render for ImageViewer {
                         }
                     }
                     AnnoTool::Text => area.cursor(CursorStyle::IBeam),
+                    AnnoTool::Eraser => area.cursor(CursorStyle::PointingHand),
                     AnnoTool::Rect
                     | AnnoTool::Ellipse
                     | AnnoTool::Arrow
                     | AnnoTool::Pen
+                    | AnnoTool::Highlighter
                     | AnnoTool::Mosaic => area.cursor(CursorStyle::Crosshair),
                 };
                 let area = area
@@ -1832,5 +1945,56 @@ impl ImageViewer {
                 .text_color(rgb(0x888888))
                 .child(info),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! 预览模块单测：橡皮擦命中判定（纯函数，不依赖窗口）。
+
+    use super::*;
+    use crate::shapes::PixelRect;
+
+    /// 橡皮擦：矩形按外包矩形命中，画笔按笔迹距离命中，未命中返回 None。
+    #[test]
+    fn erase_hit_cases() {
+        let shapes = vec![
+            Shape::Rect {
+                rect: PixelRect::new(10.0, 10.0, 50.0, 40.0),
+                color: AnnoColor::RED,
+                width: 3.0,
+            },
+            Shape::Pen {
+                pts: vec![(100.0, 100.0), (200.0, 100.0)],
+                color: AnnoColor::BLUE,
+                width: 4.0,
+            },
+        ];
+        // 矩形内命中第一项。
+        assert_eq!(erase_hit(&shapes, (20.0, 20.0), 8.0), Some(0));
+        // 笔迹正上方 5px：半径 8 + 半宽 2 = 10 ≥ 5，命中第二项。
+        assert_eq!(erase_hit(&shapes, (150.0, 105.0), 8.0), Some(1));
+        // 笔迹上方 20px：超出范围，两项都不命中。
+        assert_eq!(erase_hit(&shapes, (150.0, 120.0), 8.0), None);
+        // 空白处不命中。
+        assert_eq!(erase_hit(&shapes, (300.0, 300.0), 8.0), None);
+    }
+
+    /// 橡皮擦：重叠时删最顶层（后画的）。
+    #[test]
+    fn erase_hit_topmost() {
+        let shapes = vec![
+            Shape::Rect {
+                rect: PixelRect::new(0.0, 0.0, 100.0, 100.0),
+                color: AnnoColor::RED,
+                width: 3.0,
+            },
+            Shape::Rect {
+                rect: PixelRect::new(50.0, 50.0, 100.0, 100.0),
+                color: AnnoColor::BLUE,
+                width: 3.0,
+            },
+        ];
+        assert_eq!(erase_hit(&shapes, (75.0, 75.0), 8.0), Some(1));
     }
 }
