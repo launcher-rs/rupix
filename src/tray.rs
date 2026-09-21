@@ -11,6 +11,10 @@ use crate::{app::RupixApp, viewer::open_image_for_edit_in_app};
 const MENU_REGION: &str = "capture_region";
 /// 全屏截图菜单项编号。
 const MENU_FULL: &str = "capture_full";
+/// 屏幕取色菜单项编号。
+const MENU_PICKER: &str = "pick_color";
+/// 窗口截图菜单项编号。
+const MENU_WINDOW: &str = "capture_window";
 /// 打开图片编辑菜单项编号。
 const MENU_OPEN_IMAGE: &str = "open_image";
 /// 显示设置窗口菜单项编号。
@@ -40,6 +44,14 @@ pub fn setup_tray(cx: &mut App, main_win: WindowHandle<RupixApp>, main: Entity<R
             label: "全屏截图".into(),
             id: MENU_FULL.into(),
         },
+        TrayMenuItem::Action {
+            label: "屏幕取色".into(),
+            id: MENU_PICKER.into(),
+        },
+        TrayMenuItem::Action {
+            label: "窗口截图".into(),
+            id: MENU_WINDOW.into(),
+        },
         TrayMenuItem::Separator,
         TrayMenuItem::Action {
             label: "打开图片编辑…".into(),
@@ -67,6 +79,8 @@ pub fn setup_tray(cx: &mut App, main_win: WindowHandle<RupixApp>, main: Entity<R
     cx.on_tray_menu_action(move |id, cx| match id.as_ref() {
         MENU_REGION => trigger_capture(cx, main_win, main.clone(), false),
         MENU_FULL => trigger_capture(cx, main_win, main.clone(), true),
+        MENU_PICKER => trigger_picker(cx, main_win, main.clone()),
+        MENU_WINDOW => trigger_window(cx, main_win, main.clone()),
         MENU_OPEN_IMAGE => open_image_for_edit_in_app(main.clone(), cx),
         MENU_SHOW => show_main_window(cx, main_win),
         MENU_QUIT => cx.quit(),
@@ -92,6 +106,30 @@ pub fn trigger_capture(
             } else {
                 view.begin_region(window, viewcx);
             }
+        });
+    });
+}
+
+/// 从 App 上下文触发取色（托盘菜单 / 全局热键共用）。
+///
+/// 与截图同理：借主窗口发起，后续浮层是独立新窗口。
+pub fn trigger_picker(cx: &mut App, main_win: WindowHandle<RupixApp>, main: Entity<RupixApp>) {
+    // update_window 借出主窗口，再 update 主实体拿到 Context 发起异步取色。
+    let _ = cx.update_window(main_win.into(), |_, window, cx| {
+        cx.update_entity(&main, |view, viewcx| {
+            view.begin_picker(window, viewcx);
+        });
+    });
+}
+
+/// 从 App 上下文触发窗口截图（托盘菜单 / 全局热键共用）。
+///
+/// 与截图同理：借主窗口发起，后续浮层是独立新窗口。
+pub fn trigger_window(cx: &mut App, main_win: WindowHandle<RupixApp>, main: Entity<RupixApp>) {
+    // update_window 借出主窗口，再 update 主实体拿到 Context 发起异步捕获。
+    let _ = cx.update_window(main_win.into(), |_, window, cx| {
+        cx.update_entity(&main, |view, viewcx| {
+            view.begin_window(window, viewcx);
         });
     });
 }

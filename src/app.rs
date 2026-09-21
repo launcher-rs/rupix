@@ -6,7 +6,7 @@
 //! 日常使用快捷键截图即可，无需打开本窗口。
 
 use crate::{
-    capture::begin_capture,
+    capture::{begin_capture, begin_picker, begin_window_capture},
     hotkey::{HotkeyKind, apply_global_hotkey, hotkey_value_to_string, save_hotkey_string},
     viewer::{open_viewer, preview_from_path},
 };
@@ -38,10 +38,18 @@ pub struct RupixApp {
     region_hotkey: String,
     /// 当前生效的全屏截图热键字符串。
     full_hotkey: String,
+    /// 当前生效的屏幕取色热键字符串。
+    picker_hotkey: String,
+    /// 当前生效的窗口截图热键字符串。
+    window_hotkey: String,
     /// 区域热键录制框。
     region_input: Entity<HotkeyInputState>,
     /// 全屏热键录制框。
     full_input: Entity<HotkeyInputState>,
+    /// 取色热键录制框。
+    picker_input: Entity<HotkeyInputState>,
+    /// 窗口截图热键录制框。
+    window_input: Entity<HotkeyInputState>,
     /// 状态栏文本。
     status: SharedString,
     /// 最近保存的文件（路径 + 提示语，最多保留 10 条）。
@@ -56,18 +64,26 @@ impl RupixApp {
     /// - `cx`: 视图上下文。
     /// - `region_hotkey`: 当前生效的区域截图热键字符串。
     /// - `full_hotkey`: 当前生效的全屏截图热键字符串。
+    /// - `picker_hotkey`: 当前生效的屏幕取色热键字符串。
+    /// - `window_hotkey`: 当前生效的窗口截图热键字符串。
     pub fn new(
         _window: &mut Window,
         cx: &mut Context<Self>,
         region_hotkey: String,
         full_hotkey: String,
+        picker_hotkey: String,
+        window_hotkey: String,
     ) -> Self {
         Self {
             capturing: false,
             region_input: Self::make_input(cx, &region_hotkey),
             full_input: Self::make_input(cx, &full_hotkey),
+            picker_input: Self::make_input(cx, &picker_hotkey),
+            window_input: Self::make_input(cx, &window_hotkey),
             region_hotkey,
             full_hotkey,
+            picker_hotkey,
+            window_hotkey,
             status: SharedString::from("就绪"),
             recents: Vec::new(),
         }
@@ -109,6 +125,18 @@ impl RupixApp {
     /// 发起全屏截图（打开即全选，直接标注）。
     pub fn begin_full(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         begin_capture(self, window, cx, true);
+    }
+
+    /// 发起屏幕取色（托盘 / 热键 / 设置页共用入口）。
+    pub fn begin_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 与截图同状态机，同一时间只允许一轮操作。
+        begin_picker(self, window, cx);
+    }
+
+    /// 发起窗口截图（托盘 / 热键 / 设置页共用入口）。
+    pub fn begin_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 与截图同状态机，同一时间只允许一轮操作。
+        begin_window_capture(self, window, cx);
     }
 
     /// 从本地选择一张图片，用 Rupix 预览窗口做简单标注编辑。
@@ -161,6 +189,8 @@ impl RupixApp {
                 match kind {
                     HotkeyKind::Region => self.region_hotkey = text.clone(),
                     HotkeyKind::Full => self.full_hotkey = text.clone(),
+                    HotkeyKind::Picker => self.picker_hotkey = text.clone(),
+                    HotkeyKind::Window => self.window_hotkey = text.clone(),
                 }
                 save_hotkey_string(kind, &text);
                 self.set_status(&format!("{}全局截图快捷键：{text}", kind.label()), cx);
@@ -214,8 +244,12 @@ impl Render for RupixApp {
         let view = cx.entity();
         let region_hotkey = self.region_hotkey.clone();
         let full_hotkey = self.full_hotkey.clone();
+        let picker_hotkey = self.picker_hotkey.clone();
+        let window_hotkey = self.window_hotkey.clone();
         let region_input = self.region_input.clone();
         let full_input = self.full_input.clone();
+        let picker_input = self.picker_input.clone();
+        let window_input = self.window_input.clone();
         let status = self.status.clone();
         let capturing = self.capturing;
         let recents = self.recents.clone();
@@ -242,9 +276,11 @@ impl Render for RupixApp {
                             .child("关闭即隐藏到托盘 · 日常凭快捷键截图即可"),
                     ),
             )
-            // 快捷键设置：区域 / 全屏各一张录制卡（录制后自动应用）。
+            // 快捷键设置：区域 / 全屏 / 取色 / 窗口各一张录制卡（录制后自动应用）。
             .child(self.hotkey_card(cx, HotkeyKind::Region, region_input, &region_hotkey))
             .child(self.hotkey_card(cx, HotkeyKind::Full, full_input, &full_hotkey))
+            .child(self.hotkey_card(cx, HotkeyKind::Picker, picker_input, &picker_hotkey))
+            .child(self.hotkey_card(cx, HotkeyKind::Window, window_input, &window_hotkey))
             // 截图入口。
             .child(
                 div()
@@ -293,6 +329,46 @@ impl Render for RupixApp {
                     .child({
                         let v = view.clone();
                         div()
+                            .id("rupix-btn-picker")
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .text_sm()
+                            .cursor_pointer()
+                            .bg(if capturing {
+                                rgb(0xC0C0C0)
+                            } else {
+                                rgb(0xFF8C00)
+                            })
+                            .text_color(rgb(0xFFFFFF))
+                            .child("屏幕取色")
+                            .on_click(move |_, window, cx| {
+                                v.update(cx, |this, cx| this.begin_picker(window, cx));
+                            })
+                    })
+                    .child({
+                        let v = view.clone();
+                        div()
+                            .id("rupix-btn-window")
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .text_sm()
+                            .cursor_pointer()
+                            .bg(if capturing {
+                                rgb(0xC0C0C0)
+                            } else {
+                                rgb(0x8B008B)
+                            })
+                            .text_color(rgb(0xFFFFFF))
+                            .child("窗口截图")
+                            .on_click(move |_, window, cx| {
+                                v.update(cx, |this, cx| this.begin_window(window, cx));
+                            })
+                    })
+                    .child({
+                        let v = view.clone();
+                        div()
                             .id("rupix-btn-open-image")
                             .px_3()
                             .py_2()
@@ -313,7 +389,7 @@ impl Render for RupixApp {
             )
             // 使用提示（设置窗口平时隐藏，截图走快捷键 / 托盘）。
             .child(div().text_xs().text_color(rgb(0x888888)).child(
-                "区域截图：在全屏遮罩上拖拽框选，松手后进独立预览窗口（可缩放/复制/保存，可底部状态栏查看结果），右键/Esc 取消。本窗口关闭即隐藏到托盘。",
+                "区域截图：在全屏遮罩上拖拽框选，松手后进独立预览窗口（可缩放/复制/保存，可底部状态栏查看结果），右键/Esc 取消。取色：在冻结帧上移动取色，点击复制 HEX。本窗口关闭即隐藏到托盘。",
             ))
             // 状态栏。
             .child(

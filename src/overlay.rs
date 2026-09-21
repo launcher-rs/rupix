@@ -2,6 +2,7 @@
 //!
 //! 与系统截图 / Snipaste 一致：浮层显示的是截取瞬间的静态首帧（1:1 物理像素），
 //! 而不是透明活背景——视频等动态内容会被定住，框选与裁剪严格对应同一帧。
+//! 窗口拾取模式：悬停高亮顶层窗口，点击直接截取该窗口矩形。
 //! 界面只用 `img` + 纯色 `div`（遮罩条 / 边框 / 徽标），不用 `canvas`。
 
 use std::{path::PathBuf, sync::Arc};
@@ -38,7 +39,13 @@ pub struct PendingCapture {
 /// - `main`: 主视图实体（裁剪完成后回写预览图 / 取消时恢复状态）。
 /// - `cx`: 调用方上下文（可解引用为 `App`）。
 /// - `pending`: 首帧图片与窗口尺寸。
-pub fn open_overlay(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, pending: PendingCapture) {
+/// - `pick_window`: 为 true 时进入窗口拾取模式（悬停高亮窗口，点击截取，不可拖拽）。
+pub fn open_overlay(
+    main: Entity<RupixApp>,
+    cx: &mut Context<RupixApp>,
+    pending: PendingCapture,
+    pick_window: bool,
+) {
     // 图片尺寸兜底：捕获时没读到就现场解码一次。
     let (img_w, img_h) = if pending.img_w > 0 && pending.img_h > 0 {
         (pending.img_w, pending.img_h)
@@ -52,7 +59,7 @@ pub fn open_overlay(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, pending:
         ..
     } = pending;
     cap_log(&format!(
-        "浮层打开：img={img_w}x{img_h} bounds={display_bounds:?}"
+        "浮层打开：img={img_w}x{img_h} bounds={display_bounds:?} pick_window={pick_window}"
     ));
     let opened = cx.open_window(
         WindowOptions {
@@ -78,6 +85,7 @@ pub fn open_overlay(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, pending:
                     img_h,
                     display_bounds,
                     frame_image.clone(),
+                    pick_window,
                 )
             });
             // 浮层打开即聚焦根视图，使 Esc 立即可用。
@@ -92,7 +100,7 @@ pub fn open_overlay(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, pending:
     }
 }
 
-/// 区域选择浮层视图：薄遮罩 + 拖拽矩形，抬手裁剪。
+/// 区域选择浮层视图：薄遮罩 + 拖拽矩形，抬手裁剪；窗口拾取模式下悬停高亮窗口，点击截取。
 struct SelectView {
     /// 主视图实体（回写预览 / 状态）。
     main: Entity<RupixApp>,
@@ -114,6 +122,10 @@ struct SelectView {
     current: Option<(f32, f32)>,
     /// 根视图焦点（Esc 取消用）。
     focus_handle: FocusHandle,
+    /// 是否为窗口拾取模式（悬停高亮窗口，点击截取，不可拖拽）。
+    pick_window: bool,
+    /// 窗口拾取模式下当前高亮的窗口（视图逻辑像素矩形 + 标题）。
+    hover: Option<((f32, f32, f32, f32), String)>,
 }
 
 impl SelectView {
@@ -128,6 +140,7 @@ impl SelectView {
         img_h: u32,
         display_bounds: Bounds<Pixels>,
         frame_image: Option<Arc<RenderImage>>,
+        pick_window: bool,
     ) -> Self {
         Self {
             main,
@@ -140,6 +153,8 @@ impl SelectView {
             anchor: None,
             current: None,
             focus_handle: cx.focus_handle(),
+            pick_window,
+            hover: None,
         }
     }
 
@@ -156,8 +171,11 @@ impl SelectView {
         )
     }
 
-    /// 左键按下：开始新的拖拽。
+    /// 左键按下：区域模式开始新的拖拽；窗口拾取模式忽略（抬起时按高亮截取）。
     fn on_left_down(&mut self, ev: &MouseDownEvent, cx: &mut Context<Self>) {
+        if self.pick_window {
+            return;
+        }
         // 鼠标坐标即窗口坐标，根视图铺满窗口，直接可用。
         let p = (ev.position.x.as_f32(), ev.position.y.as_f32());
         self.anchor = Some(p);
@@ -165,8 +183,31 @@ impl SelectView {
         cx.notify();
     }
 
-    /// 鼠标移动：拖拽中更新当前点。
+    /// 鼠标移动：区域模式拖拽中更新当前点；窗口拾取模式更新悬停高亮。
     fn on_mouse_move(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
+        // 窗口拾取：视图坐标换算到物理像素做命中，高亮矩形换回视图坐标展示。
+        if self.pick_window {
+            let p = (ev.position.x.as_f32(), ev.position.y.as_f32());
+            let (sx, sy) = self.scale();
+            let hit = crate::window::hit_test((p.0 * sx) as i32, (p.1 * sy) as i32).map(|w| {
+                let (l, t, _, _) = w.rect;
+                (
+                    (
+                        l as f32 / sx,
+                        t as f32 / sy,
+                        w.width() as f32 / sx,
+                        w.height() as f32 / sy,
+                    ),
+                    w.title,
+                )
+            });
+            // 高亮不变时不刷新，避免每帧重排。
+            if hit.as_ref().map(|(r, _)| *r) != self.hover.as_ref().map(|(r, _)| *r) {
+                self.hover = hit;
+                cx.notify();
+            }
+            return;
+        }
         if self.anchor.is_none() {
             return;
         }
@@ -174,8 +215,15 @@ impl SelectView {
         cx.notify();
     }
 
-    /// 左键抬起：选区太小则忽略，否则裁剪并关闭。
+    /// 左键抬起：区域模式选区太小则忽略，否则裁剪并关闭；窗口拾取模式按高亮截取。
     fn on_left_up(&mut self, ev: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // 窗口拾取：无高亮（缝隙处）则不关闭，允许继续移动。
+        if self.pick_window {
+            if let Some(((x, y, w, h), _)) = self.hover.clone() {
+                self.finish(window, cx, (x, y, w, h));
+            }
+            return;
+        }
         // anchor 取走后置空：拖出窗口松开会再来一次 mouse_up_out，
         // 不清空会导致 finish 重复执行（双裁剪、双预览窗口）。
         let Some(anchor) = self.anchor.take() else {
@@ -301,9 +349,25 @@ impl Render for SelectView {
         let sel = self.sel_rect();
         // 徽标显示图片物理像素尺寸（与裁剪结果一致）。
         let (sx, sy) = self.scale();
-        let badge = sel.map(|(_, _, w, h)| {
-            format!("{} × {}", (w * sx).round() as u32, (h * sy).round() as u32)
-        });
+        // 窗口拾取模式：用悬停窗口代替拖拽选区展示，徽标带窗口标题。
+        let (show, badge) = if self.pick_window {
+            match &self.hover {
+                Some(((x, y, w, h), title)) => {
+                    let text = format!(
+                        "{title}  {} × {}",
+                        (w * sx).round() as u32,
+                        (h * sy).round() as u32
+                    );
+                    (Some((*x, *y, *w, *h)), Some(text))
+                }
+                None => (None, None),
+            }
+        } else {
+            let badge = sel.map(|(_, _, w, h)| {
+                format!("{} × {}", (w * sx).round() as u32, (h * sy).round() as u32)
+            });
+            (sel, badge)
+        };
 
         let mut root = div()
             .size_full()
@@ -370,10 +434,14 @@ impl Render for SelectView {
                     .bg(rgb(0x000000))
                     .text_color(rgb(0xFFFFFF))
                     .text_xs()
-                    .child("拖拽选择区域，松手截取；右键 / Esc 取消"),
+                    .child(if self.pick_window {
+                        "移动高亮窗口，点击截取；右键 / Esc 取消"
+                    } else {
+                        "拖拽选择区域，松手截取；右键 / Esc 取消"
+                    }),
             );
 
-        match sel {
+        match show {
             None => {
                 // 尚未框选：整屏薄遮罩。
                 root = root.child(div().absolute().size_full().bg(mask));
