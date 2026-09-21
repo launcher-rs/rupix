@@ -43,8 +43,8 @@ impl PixelRect {
     }
 }
 
-/// 标注颜色：RGBA 各分量 0-255。
-#[derive(Clone, Copy, Debug)]
+/// 标注颜色：RGBA 各分量 0-255（预设比较用，派生判等）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AnnoColor(pub u8, pub u8, pub u8, pub u8);
 
 impl AnnoColor {
@@ -60,6 +60,10 @@ impl AnnoColor {
     pub const BLACK: Self = Self(30, 30, 30, 255);
     /// 预设白。
     pub const WHITE: Self = Self(255, 255, 255, 255);
+    /// 预设橙。
+    pub const ORANGE: Self = Self(230, 126, 34, 255);
+    /// 预设青。
+    pub const CYAN: Self = Self(0, 188, 212, 255);
 
     /// 转为 rgpui 画布颜色（`paint_path` / 文字颜色用）。
     pub fn to_rgpui(self) -> rgpui::Rgba {

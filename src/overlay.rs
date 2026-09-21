@@ -145,16 +145,7 @@ impl SelectView {
 
     /// 当前选区（视图逻辑像素，起点终点归一化），未拖拽时为 None。
     fn sel_rect(&self) -> Option<(f32, f32, f32, f32)> {
-        let (ax, ay) = self.anchor?;
-        let (bx, by) = self.current?;
-        let x = ax.min(bx).clamp(0.0, self.view_w);
-        let y = ay.min(by).clamp(0.0, self.view_h);
-        let w = (ax - bx).abs().min(self.view_w - x);
-        let h = (ay - by).abs().min(self.view_h - y);
-        if w < 1.0 || h < 1.0 {
-            return None;
-        }
-        Some((x, y, w, h))
+        norm_rect(self.anchor?, self.current?, self.view_w, self.view_h)
     }
 
     /// 视图逻辑像素 → 图片物理像素的缩放比。
@@ -185,35 +176,32 @@ impl SelectView {
 
     /// 左键抬起：选区太小则忽略，否则裁剪并关闭。
     fn on_left_up(&mut self, ev: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.anchor.is_none() {
+        // anchor 取走后置空：拖出窗口松开会再来一次 mouse_up_out，
+        // 不清空会导致 finish 重复执行（双裁剪、双预览窗口）。
+        let Some(anchor) = self.anchor.take() else {
             return;
-        }
-        self.current = Some((ev.position.x.as_f32(), ev.position.y.as_f32()));
+        };
+        let cur = (ev.position.x.as_f32(), ev.position.y.as_f32());
+        self.current = Some(cur);
+        // 用取出的起点直接算矩形（anchor 已清空防重入，不走 sel_rect）。
+        let Some((x, y, w, h)) = norm_rect(anchor, cur, self.view_w, self.view_h) else {
+            // 点按无位移：不关闭，允许重新拖拽。
+            self.current = None;
+            cx.notify();
+            return;
+        };
         // 小于 5 逻辑像素视为误触，不关闭，允许重新拖拽。
-        if let Some((_, _, w, h)) = self.sel_rect()
-            && (w < 5.0 || h < 5.0)
-        {
-            self.anchor = None;
+        if w < 5.0 || h < 5.0 {
             self.current = None;
             cx.notify();
             return;
         }
-        self.finish(window, cx);
+        self.finish(window, cx, (x, y, w, h));
     }
 
     /// 完成选择：裁剪首帧选区，回写主窗口预览后关闭浮层。
-    fn finish(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((x, y, w, h)) = self.sel_rect() else {
-            // 无有效选区：仅关闭，状态机复位。
-            let main = self.main.clone();
-            main.update(cx, |state, cx| {
-                state.capturing = false;
-                state.set_status("已取消", cx);
-            });
-            window.remove_window();
-            cx.refresh_windows();
-            return;
-        };
+    fn finish(&mut self, window: &mut Window, cx: &mut Context<Self>, rect: (f32, f32, f32, f32)) {
+        let (x, y, w, h) = rect;
         // 换算到图片物理像素并钳制在图内。
         let (sx, sy) = self.scale();
         let cx0 = (x * sx).round().clamp(0.0, self.img_w as f32 - 1.0) as u32;
@@ -256,6 +244,18 @@ impl SelectView {
         // 同 finish：保证主窗口重画，不残留“截取中”灰按钮。
         cx.refresh_windows();
     }
+}
+
+/// 两点归一化为视图内矩形（起点终点任意顺序），退化时返回 None。
+fn norm_rect(a: (f32, f32), b: (f32, f32), vw: f32, vh: f32) -> Option<(f32, f32, f32, f32)> {
+    let x = a.0.min(b.0).clamp(0.0, vw);
+    let y = a.1.min(b.1).clamp(0.0, vh);
+    let w = (a.0 - b.0).abs().min(vw - x);
+    let h = (a.1 - b.1).abs().min(vh - y);
+    if w < 1.0 || h < 1.0 {
+        return None;
+    }
+    Some((x, y, w, h))
 }
 
 /// 从首帧图中裁剪矩形区域，存为新的临时文件。
