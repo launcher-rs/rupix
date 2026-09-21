@@ -4,7 +4,7 @@
 //! 直线 / 矩形 / 椭圆 / 箭头用笔刷印章法绘制，马赛克用分块取色，
 //! 文字用系统字体的字形位图逐字拼排（依赖 `ab_glyph`，不引入重量级排版库）。
 
-use std::io::Cursor;
+use std::{io::Cursor, path::Path};
 
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont as _, point};
 use image::{DynamicImage, ImageFormat as ImgFormat, Rgba, RgbaImage};
@@ -64,6 +64,52 @@ pub fn copy_png_to_clipboard(cx: &mut rgpui::App, png: &[u8]) -> Result<(), Stri
     let image = rgpui::Image::from_bytes(rgpui::ImageFormat::Png, png.to_vec());
     cx.write_to_clipboard(rgpui::ClipboardItem::new_image(&image));
     Ok(())
+}
+
+/// 把图片文件作为“文件项”写入系统剪贴板，便于在资源管理器目录中直接粘贴。
+///
+/// # 参数
+/// - `path`: 已存在的 PNG 文件路径。
+#[cfg(target_os = "windows")]
+pub fn copy_file_to_clipboard(path: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Err("剪贴板文件不存在".to_string());
+    }
+
+    // Windows 资源管理器需要 CF_HDROP 文件列表；PowerShell 的 Set-Clipboard -LiteralPath
+    // 会按系统格式写入文件项，比普通文本路径更适合直接粘贴成新文件。
+    let output = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "Set-Clipboard -LiteralPath $args[0]",
+        ])
+        .arg(path.as_os_str())
+        .output()
+        .map_err(|err| format!("调用系统剪贴板失败：{err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            Err("写入文件剪贴板失败".to_string())
+        } else {
+            Err(stderr)
+        }
+    }
+}
+
+/// 把图片文件作为“文件项”写入系统剪贴板，非 Windows 平台暂时回退为不支持。
+///
+/// # 参数
+/// - `path`: 已存在的 PNG 文件路径。
+#[cfg(not(target_os = "windows"))]
+pub fn copy_file_to_clipboard(_path: &Path) -> Result<(), String> {
+    Err("当前平台暂不支持复制为文件".to_string())
 }
 
 /// 加载系统字体（供文字烧录），按常见 Windows 中文字体依次尝试。

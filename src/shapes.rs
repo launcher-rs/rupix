@@ -64,6 +64,12 @@ impl AnnoColor {
     pub const ORANGE: Self = Self(230, 126, 34, 255);
     /// 预设青。
     pub const CYAN: Self = Self(0, 188, 212, 255);
+    /// 预设紫。
+    pub const PURPLE: Self = Self(155, 89, 182, 255);
+    /// 预设粉。
+    pub const PINK: Self = Self(233, 30, 99, 255);
+    /// 预设灰。
+    pub const GRAY: Self = Self(127, 140, 141, 255);
 
     /// 转为 rgpui 画布颜色（`paint_path` / 文字颜色用）。
     pub fn to_rgpui(self) -> rgpui::Rgba {
@@ -73,6 +79,27 @@ impl AnnoColor {
                 | ((self.2 as u32) << 8)
                 | (self.3 as u32),
         )
+    }
+
+    /// 转为 rgpui Hsla 颜色（颜色选择器用）。
+    pub fn to_hsla(self) -> rgpui::Hsla {
+        self.to_rgpui().into()
+    }
+
+    /// 从 rgpui Hsla 颜色构造标注颜色（透明度固定为不透明）。
+    pub fn from_hsla(color: rgpui::Hsla) -> Self {
+        let rgba: rgpui::Rgba = color.into();
+        Self(
+            (rgba.r * 255.0).round().clamp(0.0, 255.0) as u8,
+            (rgba.g * 255.0).round().clamp(0.0, 255.0) as u8,
+            (rgba.b * 255.0).round().clamp(0.0, 255.0) as u8,
+            255,
+        )
+    }
+
+    /// 转为 `#RRGGBB` 文本，用于工具栏显示当前自定义颜色。
+    pub fn to_hex(self) -> String {
+        format!("#{:02X}{:02X}{:02X}", self.0, self.1, self.2)
     }
 }
 

@@ -10,15 +10,17 @@
 //! - 文字工具支持：点击新建、点击已有文字重新编辑、Ctrl+拖动移动。
 //! - `Ctrl + 滚轮`、`+` / `-` / `0`、Esc 快捷键齐全。
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use ab_glyph::FontVec;
 use image::RgbaImage;
 use rgpui::{
-    Bounds, Context, Div, Entity, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Path, PathBuilder, Pixels, Render, Rgba, ScrollDelta,
-    ScrollWheelEvent, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, canvas,
-    div, img,
+    Bounds, Context, CursorStyle, Div, Entity, FocusHandle, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Path, PathBuilder, Pixels, Render, Rgba,
+    ScrollDelta, ScrollWheelEvent, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowOptions, canvas,
+    components::ColorPickerState,
+    div, fill, img,
     input_ui::{Input, InputState},
     point,
     prelude::*,
@@ -28,7 +30,9 @@ use rgpui::{
 use crate::{
     app::{PreviewImage, RupixApp},
     capture::cap_log,
-    export::{copy_png_to_clipboard, load_system_font, png_bytes, render_export},
+    export::{
+        copy_file_to_clipboard, copy_png_to_clipboard, load_system_font, png_bytes, render_export,
+    },
     shapes::{AnnoColor, PixelRect, Shape},
 };
 
@@ -93,6 +97,8 @@ enum ViewerAction {
     Width(f32),
     /// 切换文字背景显示。
     TextBg,
+    /// 展开 / 收起自定义颜色选择器。
+    ToggleColorPicker,
 }
 
 /// 打开图片预览窗口。
@@ -156,12 +162,22 @@ struct DragText {
     offset: (f32, f32),
 }
 
+/// 选择工具拖动标注时的临时状态。
+struct DragShape {
+    /// 被拖动的 shapes 索引。
+    idx: usize,
+    /// 上一次鼠标所在的图片像素坐标。
+    last: (f32, f32),
+}
+
 /// 图片预览视图。
 struct ImageViewer {
     /// 主视图实体（回写状态 / 最近文件）。
     main: Entity<RupixApp>,
     /// 展示的图片。
     preview: PreviewImage,
+    /// 预览用底图像素（马赛克实时预览采样用）。
+    base_image: Option<Arc<RgbaImage>>,
     /// 当前缩放。
     zoom: f32,
     /// 适应窗口的缩放（"适应"按钮恢复用）。
@@ -186,6 +202,10 @@ struct ImageViewer {
     anchor: Option<(f32, f32)>,
     /// 当前标注颜色。
     color: AnnoColor,
+    /// 自定义颜色选择器状态。
+    color_picker: Entity<ColorPickerState>,
+    /// 是否展开颜色选择器面板。
+    show_color_picker: bool,
     /// 当前线宽（图片像素）。
     width: f32,
     /// 正在编辑的文字标注（点击后出现，回车/失焦提交）。
@@ -194,6 +214,10 @@ struct ImageViewer {
     text_bg: bool,
     /// Ctrl+拖动文字的临时状态。
     drag_text: Option<DragText>,
+    /// 选择工具拖动普通标注的临时状态。
+    drag_shape: Option<DragShape>,
+    /// 选择工具悬停时是否命中已有标注（用于切换鼠标形状）。
+    hover_shape: bool,
     /// 缓存的系统字体（文字烧录用，懒加载）。
     font: Option<FontVec>,
     /// 字体是否已尝试加载（避免每次保存都读盘）。
@@ -225,9 +249,26 @@ impl ImageViewer {
         area_w: f32,
         area_h: f32,
     ) -> Self {
+        let view = cx.entity();
+        let color_picker = cx.new(|cx| {
+            ColorPickerState::new(_window, cx)
+                .color(AnnoColor::RED.to_hsla())
+                .on_change(move |color, _window, cx| {
+                    let anno = AnnoColor::from_hsla(color);
+                    view.update(cx, |this, cx| {
+                        this.color = anno;
+                        cx.notify();
+                    });
+                })
+        });
+        // 马赛克预览直接采样底图；读取失败时仍保留导出能力，只是不显示实时像素化预览。
+        let base_image = image::open(&preview.path)
+            .ok()
+            .map(|img| Arc::new(img.into_rgba8()));
         Self {
             main,
             preview,
+            base_image,
             zoom: fit_zoom,
             fit_zoom,
             area_w,
@@ -240,10 +281,14 @@ impl ImageViewer {
             draft: None,
             anchor: None,
             color: AnnoColor::RED,
+            color_picker,
+            show_color_picker: false,
             width: DEFAULT_WIDTH,
             text_editing: None,
             text_bg: true,
             drag_text: None,
+            drag_shape: None,
+            hover_shape: false,
             font: None,
             font_loaded: false,
             focus_handle: cx.focus_handle(),
@@ -349,6 +394,8 @@ impl ImageViewer {
                 self.draft = None;
                 self.anchor = None;
                 self.drag_text = None;
+                self.drag_shape = None;
+                self.hover_shape = false;
                 cx.notify();
             }
             ViewerAction::Undo => self.undo(cx),
@@ -363,6 +410,10 @@ impl ImageViewer {
             }
             ViewerAction::TextBg => {
                 self.text_bg = !self.text_bg;
+                cx.notify();
+            }
+            ViewerAction::ToggleColorPicker => {
+                self.show_color_picker = !self.show_color_picker;
                 cx.notify();
             }
         }
@@ -410,6 +461,12 @@ impl ImageViewer {
         p.0 >= 0.0 && p.1 >= 0.0 && p.0 <= self.preview.w as f32 && p.1 <= self.preview.h as f32
     }
 
+    /// 当前缩放下图片是否可平移。
+    fn can_pan(&self) -> bool {
+        self.preview.w as f32 * self.zoom > self.area_w
+            || self.preview.h as f32 * self.zoom > self.area_h
+    }
+
     /// 查找最顶层命中指定图片像素点的文字标注索引（从后往前找，后画的在上层）。
     fn hit_test_text(&self, p: (f32, f32)) -> Option<usize> {
         self.shapes
@@ -427,9 +484,30 @@ impl ImageViewer {
             .next()
     }
 
-    /// 左键按下：选择工具走平移，其他工具开始绘制。
+    /// 查找最顶层命中指定图片像素点的标注索引（从后往前找，后画的在上层）。
+    fn hit_test_shape(&self, p: (f32, f32)) -> Option<usize> {
+        self.shapes
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, shape)| shape.bbox().contains(p).then_some(i))
+    }
+
+    /// 左键按下：选择工具优先移动标注，空白处平移；其他工具开始绘制。
     fn on_anno_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.tool == AnnoTool::Select {
+            // 如果点中已有标注，选择工具用于移动标注；点空白处才平移图片。
+            if let Some(p) = self.to_image(ev.position).filter(|p| self.in_image(*p))
+                && let Some(idx) = self.hit_test_shape(p)
+            {
+                if self.text_editing.is_some() {
+                    self.commit_text(window, cx);
+                }
+                self.drag_shape = Some(DragShape { idx, last: p });
+                self.redo_stack.clear();
+                cx.notify();
+                return;
+            }
             self.on_pan_down(ev, cx);
             return;
         }
@@ -529,8 +607,28 @@ impl ImageViewer {
         cx.notify();
     }
 
-    /// 鼠标移动：Ctrl+拖动文字、选择工具平移、其他工具更新草稿。
+    /// 鼠标移动：移动标注、Ctrl+拖动文字、选择工具平移、其他工具更新草稿。
     fn on_anno_move(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
+        // 选择工具拖动标注：按图片像素增量平移，并尽量限制在图内。
+        if self.drag_shape.is_some() {
+            let Some(mut p) = self.to_image(ev.position) else {
+                return;
+            };
+            p.0 = p.0.clamp(0.0, self.preview.w as f32);
+            p.1 = p.1.clamp(0.0, self.preview.h as f32);
+            let Some(drag) = &mut self.drag_shape else {
+                return;
+            };
+            let delta = (p.0 - drag.last.0, p.1 - drag.last.1);
+            if delta.0 != 0.0 || delta.1 != 0.0 {
+                if let Some(shape) = self.shapes.get_mut(drag.idx) {
+                    move_shape_clamped(shape, delta, self.preview.w as f32, self.preview.h as f32);
+                }
+                drag.last = p;
+                cx.notify();
+            }
+            return;
+        }
         // Ctrl+拖动文字：直接更新已有文字坐标。
         if let Some(drag) = &self.drag_text {
             let Some(mut p) = self.to_image(ev.position) else {
@@ -547,6 +645,18 @@ impl ImageViewer {
         }
         // 选择工具：平移。
         if self.tool == AnnoTool::Select {
+            // 未按下时仅更新悬停命中，用于显示“可移动标注”的鼠标形状。
+            if self.pan_last.is_none() {
+                let hover_shape = self
+                    .to_image(ev.position)
+                    .filter(|p| self.in_image(*p))
+                    .and_then(|p| self.hit_test_shape(p))
+                    .is_some();
+                if self.hover_shape != hover_shape {
+                    self.hover_shape = hover_shape;
+                    cx.notify();
+                }
+            }
             self.on_pan_move(ev, cx);
             return;
         }
@@ -575,8 +685,13 @@ impl ImageViewer {
         cx.notify();
     }
 
-    /// 左键抬起：选择工具结束平移，Ctrl+拖动文字结束，其他工具提交草稿。
+    /// 左键抬起：选择工具结束移动 / 平移，Ctrl+拖动文字结束，其他工具提交草稿。
     fn on_anno_up(&mut self, cx: &mut Context<Self>) {
+        // 选择工具移动标注结束。
+        if self.drag_shape.take().is_some() {
+            cx.notify();
+            return;
+        }
         // Ctrl+拖动文字结束。
         if self.drag_text.take().is_some() {
             cx.notify();
@@ -670,38 +785,39 @@ impl ImageViewer {
         Some(render_export(&base, full, &self.shapes, &self.font))
     }
 
-    /// 复制烧录图到系统剪贴板。
+    /// 复制烧录图到系统剪贴板，并优先作为文件项支持资源管理器粘贴。
     fn copy_image(&mut self, cx: &mut Context<Self>) {
         let main = self.main.clone();
-        if self.shapes.is_empty() {
-            match std::fs::read(&self.preview.path) {
-                Ok(png) => match copy_png_to_clipboard(cx, &png) {
-                    Ok(()) => main.update(cx, |state, cx| {
-                        state.set_status("已复制到剪贴板", cx);
-                    }),
-                    Err(error) => main.update(cx, |state, cx| {
-                        state.set_status(&format!("复制失败：{error}"), cx);
-                    }),
-                },
-                Err(error) => main.update(cx, |state, cx| {
-                    state.set_status(&format!("读取图片失败：{error}"), cx);
-                }),
-            }
+        let png = if self.shapes.is_empty() {
+            std::fs::read(&self.preview.path).map_err(|error| format!("读取图片失败：{error}"))
         } else {
-            match self.burn_shapes().and_then(|img| png_bytes(&img)) {
-                Some(png) => match copy_png_to_clipboard(cx, &png) {
-                    Ok(()) => main.update(cx, |state, cx| {
-                        state.set_status("已复制标注图到剪贴板", cx);
-                    }),
-                    Err(error) => main.update(cx, |state, cx| {
-                        state.set_status(&format!("复制失败：{error}"), cx);
-                    }),
-                },
-                None => main.update(cx, |state, cx| {
-                    state.set_status("导出图片失败", cx);
-                }),
+            self.burn_shapes()
+                .and_then(|img| png_bytes(&img))
+                .ok_or_else(|| "导出图片失败".to_string())
+        };
+
+        let result = png.and_then(|png| {
+            let path = clipboard_png_path();
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| format!("创建缓存目录失败：{error}"))?;
             }
-        }
+            std::fs::write(&path, &png).map_err(|error| format!("写入剪贴板文件失败：{error}"))?;
+
+            match copy_file_to_clipboard(&path) {
+                Ok(()) => Ok("已复制为图片文件，可在文件夹中粘贴".to_string()),
+                Err(file_error) => {
+                    // 文件剪贴板失败时仍保留旧的图片剪贴板能力，避免复制按钮完全不可用。
+                    copy_png_to_clipboard(cx, &png)
+                        .map(|()| format!("已复制图片；文件粘贴不可用：{file_error}"))
+                }
+            }
+        });
+
+        main.update(cx, |state, cx| match result {
+            Ok(message) => state.set_status(&message, cx),
+            Err(error) => state.set_status(&format!("复制失败：{error}"), cx),
+        });
         cx.refresh_windows();
     }
 
@@ -807,6 +923,18 @@ fn save_dir() -> PathBuf {
     std::env::temp_dir()
 }
 
+/// 剪贴板缓存图片路径：保持文件存在，保证复制后资源管理器能异步读取。
+fn clipboard_png_path() -> PathBuf {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    std::env::temp_dir()
+        .join("rupix")
+        .join("clipboard")
+        .join(format!("rupix-{millis}.png"))
+}
+
 /// 草稿有效性：过小的图形视为误触，不提交。
 fn draft_valid(shape: &Shape) -> bool {
     match shape {
@@ -819,6 +947,54 @@ fn draft_valid(shape: &Shape) -> bool {
         Shape::Arrow { from, to, .. } => (to.0 - from.0).hypot(to.1 - from.1) > 2.0,
         Shape::Text { .. } => true,
     }
+}
+
+/// 按图片像素增量移动标注。
+fn move_shape(shape: &mut Shape, delta: (f32, f32)) {
+    let (dx, dy) = delta;
+    match shape {
+        Shape::Pen { pts, .. } | Shape::Highlighter { pts, .. } => {
+            for p in pts {
+                p.0 += dx;
+                p.1 += dy;
+            }
+        }
+        Shape::Rect { rect, .. } | Shape::Ellipse { rect, .. } | Shape::Mosaic { rect } => {
+            rect.x += dx;
+            rect.y += dy;
+        }
+        Shape::Arrow { from, to, .. } => {
+            from.0 += dx;
+            from.1 += dy;
+            to.0 += dx;
+            to.1 += dy;
+        }
+        Shape::Text { pos, .. } => {
+            pos.0 += dx;
+            pos.1 += dy;
+        }
+    }
+}
+
+/// 移动标注并尽量限制在图片范围内，避免一拖就把标注完全拖出画面。
+fn move_shape_clamped(shape: &mut Shape, delta: (f32, f32), img_w: f32, img_h: f32) {
+    let bbox = shape.bbox();
+    let mut dx = delta.0;
+    let mut dy = delta.1;
+    // 先根据当前外包矩形修正本次位移，保持标注主体留在图片范围内。
+    if bbox.x + dx < 0.0 {
+        dx = -bbox.x;
+    }
+    if bbox.y + dy < 0.0 {
+        dy = -bbox.y;
+    }
+    if bbox.x + bbox.w + dx > img_w {
+        dx = img_w - bbox.x - bbox.w;
+    }
+    if bbox.y + bbox.h + dy > img_h {
+        dy = img_h - bbox.y - bbox.h;
+    }
+    move_shape(shape, (dx, dy));
 }
 
 /// 矢量标注转 canvas 绘制路径。
@@ -936,6 +1112,55 @@ fn shape_path(
         }
         // 文字走 div 层，画布跳过。
         Shape::Text { .. } => None,
+    }
+}
+
+/// 绘制马赛克实时预览：按导出逻辑的 12px 图片块采样底图并平铺到 canvas。
+fn paint_mosaic_preview(
+    window: &mut Window,
+    base: &RgbaImage,
+    rect: PixelRect,
+    zoom: f32,
+    origin_x: f32,
+    origin_y: f32,
+) {
+    const BLOCK: i32 = 12;
+    let x0 = rect.x.floor().max(0.0) as i32;
+    let y0 = rect.y.floor().max(0.0) as i32;
+    let x1 = (rect.x + rect.w).ceil().min(base.width() as f32) as i32;
+    let y1 = (rect.y + rect.h).ceil().min(base.height() as f32) as i32;
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+
+    let mut by = y0;
+    while by < y1 {
+        let mut bx = x0;
+        while bx < x1 {
+            // 直接采样图片块左上角，预览与导出保持同一马赛克颗粒度。
+            let sample = base.get_pixel(bx as u32, by as u32);
+            let color = rgpui::rgba(
+                ((sample[0] as u32) << 24)
+                    | ((sample[1] as u32) << 16)
+                    | ((sample[2] as u32) << 8)
+                    | (sample[3] as u32),
+            );
+            let block_x1 = (bx + BLOCK).min(x1);
+            let block_y1 = (by + BLOCK).min(y1);
+            let bounds = Bounds::new(
+                point(
+                    px(origin_x + bx as f32 * zoom),
+                    px(origin_y + by as f32 * zoom),
+                ),
+                size(
+                    px((block_x1 - bx) as f32 * zoom),
+                    px((block_y1 - by) as f32 * zoom),
+                ),
+            );
+            window.paint_quad(fill(bounds, color));
+            bx += BLOCK;
+        }
+        by += BLOCK;
     }
 }
 
@@ -1086,6 +1311,22 @@ impl Render for ImageViewer {
                     .child(self.color_swatch(cx, AnnoColor::BLACK))
                     .child(self.color_swatch(cx, AnnoColor::ORANGE))
                     .child(self.color_swatch(cx, AnnoColor::CYAN))
+                    .child(self.color_swatch(cx, AnnoColor::PURPLE))
+                    .child(self.color_swatch(cx, AnnoColor::PINK))
+                    .child(self.color_swatch(cx, AnnoColor::GRAY))
+                    .child(self.mini_button(
+                        cx,
+                        "color-picker",
+                        "取色",
+                        ViewerAction::ToggleColorPicker,
+                        self.show_color_picker,
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0xCCCCCC))
+                            .child(self.color.to_hex()),
+                    )
                     .child(self.mini_button(
                         cx,
                         "w-thin",
@@ -1129,6 +1370,11 @@ impl Render for ImageViewer {
                                 .text_xs()
                                 .text_color(rgb(0x999999))
                                 .child("点击新建 · Ctrl+拖动移动 · 点击已有文字编辑")
+                        } else if self.tool == AnnoTool::Select {
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x999999))
+                                .child("拖动标注移动 · 空白处拖动画布")
                         } else {
                             div()
                                 .text_xs()
@@ -1145,55 +1391,61 @@ impl Render for ImageViewer {
                 let area = div().flex_1().relative().overflow_hidden();
                 let area = match self.tool {
                     AnnoTool::Select => {
-                        if self.pan_last.is_some() || self.drag_text.is_some() {
-                            area.cursor_grabbing()
+                        if self.pan_last.is_some()
+                            || self.drag_text.is_some()
+                            || self.drag_shape.is_some()
+                        {
+                            area.cursor(CursorStyle::ClosedHand)
+                        } else if self.hover_shape || self.can_pan() {
+                            area.cursor(CursorStyle::OpenHand)
                         } else {
-                            area.cursor_grab()
+                            area.cursor(CursorStyle::Arrow)
                         }
                     }
-                    AnnoTool::Text => area.cursor_text(),
+                    AnnoTool::Text => area.cursor(CursorStyle::IBeam),
                     AnnoTool::Rect
                     | AnnoTool::Ellipse
                     | AnnoTool::Arrow
                     | AnnoTool::Pen
-                    | AnnoTool::Mosaic => area.cursor_crosshair(),
+                    | AnnoTool::Mosaic => area.cursor(CursorStyle::Crosshair),
                 };
-                area.on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, ev: &MouseDownEvent, window, cx| {
-                        this.on_anno_down(ev, window, cx);
-                    }),
-                )
-                .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
-                    this.on_anno_move(ev, cx);
-                }))
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
-                        this.on_anno_up(cx);
-                    }),
-                )
-                .on_mouse_up_out(
-                    MouseButton::Left,
-                    cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
-                        this.on_anno_up(cx);
-                    }),
-                )
-                .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _window, cx| {
-                    if !ev.modifiers.control {
-                        return;
-                    }
-                    let dy = match ev.delta {
-                        ScrollDelta::Pixels(p) => p.y.as_f32(),
-                        ScrollDelta::Lines(p) => p.y * 40.0,
-                    };
-                    if dy > 0.0 {
-                        this.zoom_by(ZOOM_STEP, cx);
-                    } else if dy < 0.0 {
-                        this.zoom_by(1.0 / ZOOM_STEP, cx);
-                    }
-                }))
-                .child(
+                let area = area
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                            this.on_anno_down(ev, window, cx);
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
+                        this.on_anno_move(ev, cx);
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
+                            this.on_anno_up(cx);
+                        }),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
+                            this.on_anno_up(cx);
+                        }),
+                    )
+                    .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _window, cx| {
+                        if !ev.modifiers.control {
+                            return;
+                        }
+                        let dy = match ev.delta {
+                            ScrollDelta::Pixels(p) => p.y.as_f32(),
+                            ScrollDelta::Lines(p) => p.y * 40.0,
+                        };
+                        if dy > 0.0 {
+                            this.zoom_by(ZOOM_STEP, cx);
+                        } else if dy < 0.0 {
+                            this.zoom_by(1.0 / ZOOM_STEP, cx);
+                        }
+                    }));
+                let area = area.child(
                     div()
                         .absolute()
                         .left(px(left))
@@ -1239,6 +1491,8 @@ impl Render for ImageViewer {
                             }
                             // 正在编辑的 inline 输入框。
                             if let Some(editing) = &self.text_editing {
+                                let input_text_size = DEFAULT_TEXT_SIZE * zoom;
+                                let input_border = self.color.to_rgpui();
                                 marks.push(
                                     div()
                                         .absolute()
@@ -1246,6 +1500,19 @@ impl Render for ImageViewer {
                                         .top(px(editing.container_pos.1))
                                         .min_w(px(180.0))
                                         .max_w(px(400.0))
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_sm()
+                                        .border_1()
+                                        .border_color(input_border)
+                                        .bg(Rgba {
+                                            r: 0.0,
+                                            g: 0.0,
+                                            b: 0.0,
+                                            a: 0.78,
+                                        })
+                                        .text_color(rgb(0xFFFFFF))
+                                        .text_size(px(input_text_size))
                                         // 阻止输入框点击冒泡到图片区，避免触发 commit + place。
                                         .on_mouse_down(
                                             MouseButton::Left,
@@ -1253,7 +1520,13 @@ impl Render for ImageViewer {
                                                 cx.stop_propagation();
                                             }),
                                         )
-                                        .child(Input::new(&editing.input)),
+                                        .child(
+                                            Input::new(&editing.input)
+                                                .appearance(false)
+                                                .bordered(false)
+                                                .text_color(rgb(0xFFFFFF))
+                                                .text_size(px(input_text_size)),
+                                        ),
                                 );
                             }
                             marks
@@ -1262,11 +1535,24 @@ impl Render for ImageViewer {
                         .child({
                             let paint_shapes = self.shapes.clone();
                             let paint_draft = self.draft.clone();
+                            let base_image = self.base_image.clone();
                             canvas(
                                 move |bounds, _, _| bounds,
                                 move |_bounds, paint_bounds, window, _| {
                                     let origin = paint_bounds.origin;
                                     for shape in paint_shapes.iter().chain(paint_draft.iter()) {
+                                        if let Shape::Mosaic { rect } = shape
+                                            && let Some(base) = &base_image
+                                        {
+                                            paint_mosaic_preview(
+                                                window,
+                                                base,
+                                                *rect,
+                                                zoom,
+                                                origin.x.as_f32(),
+                                                origin.y.as_f32(),
+                                            );
+                                        }
                                         if let Some((path, color)) = shape_path(
                                             shape,
                                             zoom,
@@ -1285,7 +1571,30 @@ impl Render for ImageViewer {
                             .w(px(dw))
                             .h(px(dh))
                         }),
-                )
+                );
+                if self.show_color_picker {
+                    area.child(
+                        div()
+                            .absolute()
+                            .left(px(12.0))
+                            .top(px(12.0))
+                            .occlude()
+                            // 颜色面板浮在图片上，事件到这里为止，避免拖滑块时触发标注绘制。
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|_, _ev, _, cx| cx.stop_propagation()),
+                            )
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|_, _ev, _, cx| cx.stop_propagation()),
+                            )
+                            .on_mouse_move(cx.listener(|_, _ev, _, cx| cx.stop_propagation()))
+                            .on_scroll_wheel(cx.listener(|_, _ev, _, cx| cx.stop_propagation()))
+                            .child(self.color_picker.clone()),
+                    )
+                } else {
+                    area
+                }
             })
     }
 }
