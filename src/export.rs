@@ -426,8 +426,6 @@ pub fn load_rgba(path: &std::path::Path) -> Option<RgbaImage> {
 mod tests {
     //! 导出模块单测：用合成底图覆盖全部标注类型，保证栅格化不 panic。
 
-    use image::GenericImageView as _;
-
     use super::*;
 
     /// 全类型标注导出冒烟测试（尺寸与 PNG 编码断言）。

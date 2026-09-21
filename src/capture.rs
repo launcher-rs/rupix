@@ -14,8 +14,9 @@ use std::{
 use rgpui::{Bounds, Context, Pixels, ScreenCaptureSource, SourceMetadata, Window};
 
 use crate::{
-    app::RupixApp,
+    app::{PreviewImage, RupixApp},
     overlay::{PendingCapture, open_overlay},
+    viewer::open_viewer,
 };
 
 /// 开始一次截屏流程（区域截图或全屏截图共用）。
@@ -48,11 +49,16 @@ pub fn begin_capture(
 
     // 捕获源枚举是异步 oneshot，先在 UI 线程拿到接收端，再挂后台任务等待。
     let sources_rx = cx.screen_capture_sources();
+    cap_log("任务启动，等待屏幕源列表");
     cx.spawn_in(window, async move |this, cx| {
         // 等待系统返回可捕获的屏幕 / 窗口列表。
         let sources: Vec<Rc<dyn ScreenCaptureSource>> = match sources_rx.await {
             Ok(Ok(sources)) if !sources.is_empty() => sources,
-            _ => {
+            other => {
+                cap_log(&format!(
+                    "屏幕源获取失败或为空：{}",
+                    sources_result_desc(&other)
+                ));
                 let _ = this.update(cx, |state, cx| {
                     state.capturing = false;
                     state.set_status("未找到可捕获的屏幕源", cx);
@@ -60,6 +66,7 @@ pub fn begin_capture(
                 return;
             }
         };
+        cap_log(&format!("拿到屏幕源 {} 个", sources.len()));
 
         // 优先选择主显示器，其次取第一个源，保证点一次按钮必有图。
         let source = pick_main_source(&sources).unwrap_or_else(|| sources[0].clone());
@@ -102,9 +109,11 @@ pub fn begin_capture(
         let stream_rx = source.stream(&foreground, frame_callback);
 
         // 等待推流真正启动，失败则直接回状态。
+        cap_log("开始启动推流");
         let stream = match stream_rx.await {
             Ok(Ok(stream)) => stream,
             _ => {
+                cap_log("推流启动失败");
                 let _ = this.update(cx, |state, cx| {
                     state.capturing = false;
                     state.set_status("启动屏幕捕获失败", cx);
@@ -112,6 +121,7 @@ pub fn begin_capture(
                 return;
             }
         };
+        cap_log("推流已启动，等待首帧");
 
         // 最多等待 5 秒首帧；超时一般是目标屏幕静止无帧或权限不足。
         let mut waited = 0;
@@ -121,8 +131,13 @@ pub fn begin_capture(
                 .await;
             waited += 1;
         }
+        cap_log(&format!(
+            "等待结束：frame_saved={} waited={waited}",
+            frame_saved.load(Ordering::Relaxed)
+        ));
         // 显式释放推流，会话随之关闭（首帧已落盘，无需继续）。
         drop(stream);
+        cap_log("推流已释放");
 
         if !frame_saved.load(Ordering::Relaxed) {
             let _ = this.update(cx, |state, cx| {
@@ -134,22 +149,79 @@ pub fn begin_capture(
 
         // 从伴随的 .size 文件读回图片尺寸。
         let (img_w, img_h) = read_frame_size(&frame_path).unwrap_or((0, 0));
-        let pending = PendingCapture {
-            frame_path,
-            img_w,
-            img_h,
-            display_bounds,
-            fullscreen,
-        };
-        // 在 UI 上下文打开全屏标注浮层，并恢复主视图状态。
+        cap_log(&format!("首帧尺寸 {img_w}x{img_h}"));
+        // 在 UI 上下文恢复主视图状态，并按模式分流。
         // 注意：此处已在实体的单次租借内，直接改 `state`，不要再嵌套 `update`。
-        let _ = this.update(cx, |state, cx| {
-            state.capturing = false;
-            state.set_status("已截取，正在标注…", cx);
-            open_overlay(cx.entity(), cx, pending);
-        });
+        let updated = this
+            .update(cx, |state, cx| {
+                state.capturing = false;
+                if fullscreen {
+                    // 全屏截图：首帧直接进独立预览窗口（可缩放）。
+                    let msg = format!("已截取全屏 {img_w} × {img_h}，见预览窗口");
+                    let preview = PreviewImage {
+                        path: frame_path,
+                        w: img_w,
+                        h: img_h,
+                    };
+                    state.set_status(&msg, cx);
+                    open_viewer(cx.entity(), cx, preview);
+                } else {
+                    // 区域截图：首帧只做裁剪来源，打开薄遮罩浮层框选。
+                    state.set_status("已截取，在遮罩上拖拽框选…", cx);
+                    open_overlay(
+                        cx.entity(),
+                        cx,
+                        PendingCapture {
+                            frame_path,
+                            img_w,
+                            img_h,
+                            display_bounds,
+                        },
+                    );
+                }
+            })
+            .is_ok();
+        cap_log(&format!("截图后续处理完成：update_ok={updated}"));
     })
     .detach();
+}
+
+/// 截图诊断日志：追加到系统临时目录，便于复现卡死时取证。
+pub(crate) fn cap_log(msg: &str) {
+    // 日志写失败不影响截图流程，直接忽略。
+    let path = std::env::temp_dir().join("rupix-cap.log");
+    let line = format!(
+        "[pid={} {}] {msg}\n",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    use std::io::Write as _;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+/// 描述屏幕源获取结果（日志用，不暴露内部错误细节给用户）。
+// 类型复杂是 oneshot 嵌套 Result 的固有形状，日志拼接用，暂不拆分。
+#[allow(clippy::type_complexity)]
+fn sources_result_desc(
+    result: &Result<
+        Result<Vec<Rc<dyn ScreenCaptureSource>>, impl std::fmt::Debug>,
+        impl std::fmt::Debug,
+    >,
+) -> String {
+    match result {
+        Ok(Ok(sources)) => format!("空列表（{} 个源）", sources.len()),
+        Ok(Err(error)) => format!("系统枚举失败：{error:?}"),
+        Err(error) => format!("通道失败：{error:?}"),
+    }
 }
 
 /// 从候选源中挑选主显示器对应的捕获源。

@@ -5,14 +5,48 @@
 
 use rgpui::{App, Keystroke, components::HotkeyValue};
 
-/// 全局截图热键在系统中的固定编号（`register_global_hotkey` 的 id 参数）。
-pub const HOTKEY_ID: u32 = 1;
+/// 截图热键种类：区域与全屏各一个系统级全局热键。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HotkeyKind {
+    /// 区域截图。
+    Region,
+    /// 全屏截图。
+    Full,
+}
 
-/// 出厂默认热键：Ctrl+Shift+A（参考 Snipaste / 微信截图的常用组合）。
-pub const DEFAULT_HOTKEY: &str = "ctrl-shift-a";
+impl HotkeyKind {
+    /// 系统注册编号（两种热键互不干扰）。
+    pub fn id(self) -> u32 {
+        match self {
+            HotkeyKind::Region => 1,
+            HotkeyKind::Full => 2,
+        }
+    }
 
-/// 快捷键配置文件名，保存在程序所在目录，改键后下次启动仍然生效。
-const HOTKEY_FILE_NAME: &str = "rupix-hotkey.txt";
+    /// 出厂默认按键串（参考 Snipaste / 微信截图的常用组合）。
+    pub fn default_text(self) -> &'static str {
+        match self {
+            HotkeyKind::Region => "ctrl-shift-a",
+            HotkeyKind::Full => "ctrl-shift-f",
+        }
+    }
+
+    /// 配置文件名（与程序放同一目录；区域沿用旧单热键文件名，老配置直接生效）。
+    pub fn file_name(self) -> &'static str {
+        match self {
+            HotkeyKind::Region => "rupix-hotkey.txt",
+            HotkeyKind::Full => "rupix-hotkey-full.txt",
+        }
+    }
+
+    /// 界面展示名。
+    pub fn label(self) -> &'static str {
+        match self {
+            HotkeyKind::Region => "区域截图",
+            HotkeyKind::Full => "全屏截图",
+        }
+    }
+}
 
 /// 把录制到的快捷键值转换为 `Keystroke::parse` 可接受的按键串。
 ///
@@ -40,26 +74,27 @@ pub fn hotkey_value_to_string(value: &HotkeyValue) -> String {
     parts.join("-")
 }
 
-/// 读取用户保存的截图热键，文件不存在或非法时回退到 [`DEFAULT_HOTKEY`]。
-pub fn load_hotkey_string() -> String {
+/// 读取用户保存的截图热键，文件不存在或非法时回退到该种类的默认值。
+pub fn load_hotkey_string(kind: HotkeyKind) -> String {
     // 配置与程序放在同一目录，重装也不会丢；取不到路径时直接用默认值。
     // 顺手校验一次，非法配置不污染本次运行。
     std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(HOTKEY_FILE_NAME)))
+        .and_then(|exe| exe.parent().map(|dir| dir.join(kind.file_name())))
         .and_then(|path| std::fs::read_to_string(path).ok())
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty() && Keystroke::parse(text).is_ok())
-        .unwrap_or_else(|| DEFAULT_HOTKEY.to_string())
+        .unwrap_or_else(|| kind.default_text().to_string())
 }
 
 /// 保存用户录制的截图热键字符串。
 ///
 /// # 参数
+/// - `kind`: 热键种类（决定写哪个配置文件）。
 /// - `hotkey`: 如 `ctrl-shift-a` 的按键串。
-pub fn save_hotkey_string(hotkey: &str) {
+pub fn save_hotkey_string(kind: HotkeyKind, hotkey: &str) {
     // 写入失败仅忽略（不阻断改键流程），调用方已通过返回值提示注册结果。
-    if let Some(path) = hotkey_file_path() {
+    if let Some(path) = hotkey_file_path(kind) {
         let _ = std::fs::write(path, hotkey);
     }
 }
@@ -68,29 +103,30 @@ pub fn save_hotkey_string(hotkey: &str) {
 ///
 /// # 参数
 /// - `cx`: rgpui 应用上下文。
+/// - `kind`: 热键种类（决定系统注册编号）。
 /// - `hotkey`: 如 `ctrl-shift-a` 的按键串。
 ///
 /// # 返回
 /// 注册成功返回 `Ok(())`；按键串非法或被系统占用时返回中文错误说明。
-pub fn apply_global_hotkey(cx: &mut App, hotkey: &str) -> Result<(), String> {
+pub fn apply_global_hotkey(cx: &mut App, kind: HotkeyKind, hotkey: &str) -> Result<(), String> {
     // Windows 的 RegisterHotKey 只支持部分按键（如 F1-F12、单字符、方向键等），
     // 先解析再注册，错误直接展示给用户。
     let keystroke =
         Keystroke::parse(hotkey).map_err(|error| format!("快捷键解析失败（{hotkey}）：{error}"))?;
     // 同一编号重复注册前必须先注销，否则系统会返回占用错误。
-    cx.unregister_global_hotkey(HOTKEY_ID);
-    cx.register_global_hotkey(HOTKEY_ID, &keystroke)
-        .map_err(|error| format!("全局快捷键注册失败（{hotkey}）：{error}"))
+    cx.unregister_global_hotkey(kind.id());
+    cx.register_global_hotkey(kind.id(), &keystroke)
+        .map_err(|error| format!("{}全局快捷键注册失败（{hotkey}）：{error}", kind.label()))
 }
 
 /// 快捷键配置文件的完整路径。
-fn hotkey_file_path() -> Option<std::path::PathBuf> {
+fn hotkey_file_path(kind: HotkeyKind) -> Option<std::path::PathBuf> {
     // 优先放在程序所在目录， portable 风格，开箱即用；
     // 极端情况下（如路径不可取）回退到系统临时目录。
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
-        return Some(dir.join(HOTKEY_FILE_NAME));
+        return Some(dir.join(kind.file_name()));
     }
-    Some(std::env::temp_dir().join(HOTKEY_FILE_NAME))
+    Some(std::env::temp_dir().join(kind.file_name()))
 }
