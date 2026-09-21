@@ -2,6 +2,7 @@
 name = "rupix"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
 
 [dependencies]
 # 本地 rgpui 源码：截图能力需要开启 screen-capture 特性。
@@ -37,3 +38,7 @@ windows = { version = "0.62", features = [
   "Win32_System_Memory",
   "Win32_System_Ole",
 ] }
+
+[build-dependencies]
+# Windows exe 图标嵌入（任务栏 / 资源管理器显示应用 logo），仅 build.rs 使用。
+embed-resource = "3"

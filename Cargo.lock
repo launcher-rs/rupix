@@ -5006,6 +5006,7 @@ name = "rupix"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "embed-resource",
  "image",
  "rgpui",
  "rgpui-platform",

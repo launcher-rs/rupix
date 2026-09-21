@@ -28,6 +28,8 @@ pub fn setup_tray(cx: &mut App, main_win: WindowHandle<RupixApp>, main: Entity<R
     // 没有窗口也要保持运行，否则隐藏主窗口即退出进程。
     cx.set_keep_alive_without_windows(true);
     cx.set_tray_tooltip("Rupix 拾景");
+    // 托盘图标：品牌蓝取景框 + 山形（`assets/tray.png`，PNG 字节由后端解码）。
+    cx.set_tray_icon(Some(include_bytes!("../assets/tray.png")));
 
     cx.set_tray_menu(vec![
         TrayMenuItem::Action {
