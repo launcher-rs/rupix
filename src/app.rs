@@ -96,8 +96,8 @@ pub fn autosave_screenshot(src: &std::path::Path) -> Option<PathBuf> {
     Some(dst)
 }
 
-/// 带毫秒时间戳的截图文件名（自动保存与手动保存共用）。
-fn timestamped_png_name() -> String {
+/// 带毫秒时间戳的截图文件名（自动保存、手动保存与 CLI 默认输出共用）。
+pub(crate) fn timestamped_png_name() -> String {
     format!(
         "rupix-{}.png",
         std::time::SystemTime::now()

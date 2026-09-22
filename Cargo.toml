@@ -31,10 +31,13 @@ strip = true
 
 # Windows 双格式剪贴板（图片 + 文件）需要直接调用系统剪贴板 API，
 # rgpui 内建写剪贴板在 Windows 后端会忽略文件条目，故直接依赖 windows。
+# 另需 GDI（CLI 全屏截图 BitBlt）与 Console（release 无控制台时挂接父控制台输出）。
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Console",
   "Win32_System_DataExchange",
   "Win32_System_Memory",
   "Win32_System_Ole",

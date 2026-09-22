@@ -3,6 +3,7 @@
 
 mod app;
 mod capture;
+mod cli;
 // 公开函数均被 viewer 使用，allow 仅为冗余防护。
 #[allow(dead_code)]
 mod export;
@@ -31,8 +32,12 @@ use rgpui::actions;
 #[cfg(any(feature = "inspector", debug_assertions))]
 actions!(inspector, [ToggleInspector]);
 
-/// 程序入口：组装主窗口、托盘、全局热键后进入事件循环。
+/// 程序入口：带截图参数走命令行（截图后退出），无参数进图形界面。
 fn main() {
+    // CLI 早分发：不进 rgpui 事件循环，也不受单例守卫限制（允许与托盘进程并存）。
+    if cli::is_cli_invocation() {
+        std::process::exit(cli::run_cli());
+    }
     // 单例守卫：已有实例在跑（托盘常驻）则直接退出，避免热键冲突与重复托盘图标。
     // 守卫必须存活整个进程期，故意泄漏持有到进程结束。
     let Ok(_guard) = rgpui::SingleInstance::acquire("rupix") else {
