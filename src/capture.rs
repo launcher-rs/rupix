@@ -18,7 +18,7 @@ use rgpui::{
 };
 
 use crate::{
-    app::{PreviewImage, RupixApp},
+    app::{PreviewImage, RupixApp, autosave_screenshot},
     overlay::{PendingCapture, open_overlay},
     viewer::open_viewer,
 };
@@ -85,13 +85,26 @@ pub fn begin_capture(
             .update(cx, |state, cx| {
                 state.capturing = false;
                 if fullscreen {
-                    // 全屏截图：首帧直接进独立预览窗口（可缩放）。
-                    let msg = format!("已截取全屏 {img_w} × {img_h}，见预览窗口");
-                    let preview = PreviewImage {
-                        path: frame_path,
-                        w: img_w,
-                        h: img_h,
+                    // 全屏截图：原图先自动存一份到默认保存目录，再进独立预览窗口。
+                    let (preview, auto_note) = match autosave_screenshot(&frame_path) {
+                        Some(saved) => (
+                            PreviewImage {
+                                path: saved,
+                                w: img_w,
+                                h: img_h,
+                            },
+                            "原图已自动保存",
+                        ),
+                        None => (
+                            PreviewImage {
+                                path: frame_path,
+                                w: img_w,
+                                h: img_h,
+                            },
+                            "自动保存失败，仅预览",
+                        ),
                     };
+                    let msg = format!("已截取全屏 {img_w} × {img_h}（{auto_note}），见预览窗口");
                     state.set_status(&msg, cx);
                     open_viewer(cx.entity(), cx, preview);
                 } else {
@@ -107,7 +120,6 @@ pub fn begin_capture(
                             display_bounds,
                             frame_image,
                         },
-                        false,
                     );
                 }
             })
@@ -156,72 +168,7 @@ pub fn begin_picker(state: &mut RupixApp, window: &mut Window, cx: &mut Context<
     .detach();
 }
 
-/// 开始一次窗口截图流程（托盘 / 热键 / 设置页共用入口）。
-///
-/// 打开窗口拾取浮层：悬停高亮顶层窗口，点击截取该窗口矩形。
-/// 非 Windows 平台无窗口枚举能力，直接提示暂不支持。
-///
-/// # 参数
-/// - `state`: 主视图可变引用（调用方已持有实体租借，直接改状态，不要再 `update`）。
-/// - `window`: 发起截图的窗口，用于挂载后台任务。
-/// - `cx`: 主视图上下文。
-pub fn begin_window_capture(state: &mut RupixApp, window: &mut Window, cx: &mut Context<RupixApp>) {
-    // 同一时间只允许一轮操作，避免重复推流占用系统捕获会话。
-    if state.capturing {
-        return;
-    }
-    // 窗口拾取依赖系统窗口枚举，非 Windows 直接降级。
-    if cfg!(not(target_os = "windows")) {
-        state.set_status("窗口截图暂仅支持 Windows", cx);
-        return;
-    }
-    state.capturing = true;
-    state.set_status("正在截取屏幕…", cx);
-
-    // 浮层需要全屏尺寸：优先取主显示器边界，取不到则回退到居中默认尺寸。
-    let display_bounds: Bounds<Pixels> = cx
-        .primary_display()
-        .map(|display| display.bounds())
-        .unwrap_or_else(|| {
-            Bounds::centered(None, rgpui::size(rgpui::px(1280.), rgpui::px(800.)), cx)
-        });
-
-    cap_log("窗口截图任务启动，等待屏幕源列表");
-    cx.spawn_in(window, async move |this, cx| {
-        let Some(frame) = capture_first_frame(&this, cx, display_bounds).await else {
-            return;
-        };
-        let CapturedFrame {
-            frame_path,
-            img_w,
-            img_h,
-            display_bounds,
-            frame_image,
-        } = frame;
-        let updated = this
-            .update(cx, |state, cx| {
-                state.capturing = false;
-                state.set_status("移动高亮窗口，点击截取…", cx);
-                open_overlay(
-                    cx.entity(),
-                    cx,
-                    PendingCapture {
-                        frame_path,
-                        img_w,
-                        img_h,
-                        display_bounds,
-                        frame_image,
-                    },
-                    true,
-                );
-            })
-            .is_ok();
-        cap_log(&format!("窗口截图后续处理完成：update_ok={updated}"));
-    })
-    .detach();
-}
-
-/// 捕获首帧并落盘（区域 / 全屏 / 取色 / 窗口截图共享）。
+/// 捕获首帧并落盘（区域 / 全屏 / 取色共享）。
 ///
 /// 失败时内部已复位状态机并写清中文状态，返回 `None`；
 /// 成功返回首帧数据，调用方负责后续分流（浮层 / 预览 / 取色）。

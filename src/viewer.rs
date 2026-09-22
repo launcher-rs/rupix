@@ -1,10 +1,12 @@
 //! 图片预览与标注窗口：截图完成后独立展示，像图片浏览器一样查看并标注。
 //!
-//! - 打开时按显示器 75% 区域自适应图片大小，之后窗口固定；
+//! - 打开时窗口大小固定（跟随显示器约 75%），图片在图片区内居中显示，
+//!   大图按比例缩小完整落入，小图居中 100% 显示；之后窗口固定不再变化；
 //! - 缩放只改变图片大小（图片居中，超出可拖拽平移），窗口不再跟随变化；
-//! - 第一排：缩小 / 放大 / 适应 / 复制 / 保存 / 关闭；
-//! - 第二排：选择 / 矩形 / 椭圆 / 箭头 / 画笔 / 荧光笔 / 橡皮擦 / 马赛克 / 文字 / 撤销 / 重做；
-//! - 第三排：颜色 / 线宽 / 文字背景开关 / 操作提示；
+//! - 系统标题栏显示窗口名与尺寸，客户区顶部压缩为两排工具条：
+//!   - 操作排：缩小 / 放大 / 适应 / 撤销 / 重做 / 线宽 / 文字底色 / 复制 / 保存；
+//!   - 标注排：选择 / 矩形 / 椭圆 / 箭头 / 画笔 / 荧光笔 / 橡皮擦 / 马赛克 / 文字 /
+//!     预设颜色（精简，自定义色走取色器）/ 操作提示；
 //! - 标注画在覆盖图片的 `canvas` 上实时预览，
 //!   保存 / 复制时经 `export::render_export` 烧录为同一坐标系的最终图；
 //! - 文字工具支持：点击新建、点击已有文字重新编辑、Ctrl+拖动移动。
@@ -17,8 +19,8 @@ use image::RgbaImage;
 use rgpui::{
     Bounds, Context, CursorStyle, Div, Entity, FocusHandle, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Path, PathBuilder, Pixels, Render, Rgba,
-    ScrollDelta, ScrollWheelEvent, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, canvas,
+    ScrollDelta, ScrollWheelEvent, SharedString, Slider, SliderEvent, SliderState, Subscription,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, canvas,
     components::ColorPickerState,
     div, fill, img,
     input_ui::{Input, InputState},
@@ -28,7 +30,7 @@ use rgpui::{
 };
 
 use crate::{
-    app::{PreviewImage, RupixApp},
+    app::{PreviewImage, RupixApp, load_save_dir},
     capture::cap_log,
     export::{
         copy_image_and_file_to_clipboard, copy_png_to_clipboard, load_system_font, png_bytes,
@@ -44,19 +46,32 @@ const MAX_ZOOM: f32 = 8.0;
 /// 单次按钮缩放步进（×1.25）。
 const ZOOM_STEP: f32 = 1.25;
 /// 工具条单排高度（逻辑像素）。
-const ROW_H: f32 = 44.0;
-/// 工具条总高度（三排：查看 / 工具 / 颜色线宽）。
-const TOOLBAR_H: f32 = ROW_H * 3.0;
+const ROW_H: f32 = 40.0;
+/// 顶部工具条总高度（客户区两排：操作 / 标注，系统标题栏在其外不计入）。
+const TOOLBAR_H: f32 = ROW_H * 2.0;
 /// 底部状态栏高度（逻辑像素）。
 const STATUS_H: f32 = 30.0;
+/// 预览窗口最小宽（逻辑像素，固定窗口下限，保证两排工具条不拥挤）。
+const MIN_VIEWER_W: f32 = 720.0;
+/// 预览窗口最小总高（逻辑像素，含两排工具条与状态栏）。
+const MIN_VIEWER_H: f32 = 520.0;
 /// 画笔默认线宽（图片像素）。
 const DEFAULT_WIDTH: f32 = 4.0;
 /// 橡皮擦半径（图片像素，画笔类额外叠加自身半宽）。
 const ERASER_RADIUS: f32 = 8.0;
 /// 文字标注默认字号（图片像素）。
 const DEFAULT_TEXT_SIZE: f32 = 28.0;
+/// 线宽最小值（图片像素，滑杆下限）。
+const WIDTH_MIN: f32 = 1.0;
+/// 线宽最大值（图片像素，滑杆上限）。
+const WIDTH_MAX: f32 = 30.0;
 
-/// 标注工具（工具条第二排）。
+/// 规范化线宽：钳制到滑杆范围并取整（图片像素，滑杆回调与步进共用）。
+fn normalize_width(w: f32) -> f32 {
+    w.clamp(WIDTH_MIN, WIDTH_MAX).round()
+}
+
+/// 标注工具（工具条标注排）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum AnnoTool {
     /// 选择 / 拖拽平移。
@@ -92,8 +107,6 @@ enum ViewerAction {
     Copy,
     /// 保存烧录图到桌面。
     Save,
-    /// 关闭窗口。
-    Close,
     /// 切换标注工具。
     Tool(AnnoTool),
     /// 撤销一个标注。
@@ -102,8 +115,8 @@ enum ViewerAction {
     Redo,
     /// 切换标注颜色。
     Color(AnnoColor),
-    /// 切换线宽（图片像素）。
-    Width(f32),
+    /// 步进调节线宽（图片像素，滑杆旁 − / + 与 [ ] 键共用）。
+    WidthNudge(f32),
     /// 切换文字背景显示。
     TextBg,
     /// 展开 / 收起自定义颜色选择器。
@@ -112,6 +125,45 @@ enum ViewerAction {
     OpenSavedFile,
     /// 打开最近一次保存文件所在目录（系统文件管理器）。
     OpenSavedDir,
+    /// 关闭确认：保存并关闭（有未保存修改时）。
+    ConfirmSaveClose,
+    /// 关闭确认：不保存，直接关闭（有未保存修改时）。
+    ConfirmDiscardClose,
+    /// 关闭确认：取消关闭，继续编辑。
+    CancelCloseConfirm,
+}
+
+/// 预览窗口初始布局：窗口大小固定（跟随显示器），图片居中、仅缩小适配。
+///
+/// 小截图不再撑出小窗口，而是在固定图片区内居中 100% 显示；
+/// 大截图按比例缩小，保证完整落入图片区（之后可用 + / Ctrl+滚轮放大查看）。
+///
+/// # 参数
+/// - `disp_w` / `disp_h`：主显示器逻辑尺寸。
+/// - `img_w` / `img_h`：图片像素尺寸（宽高均大于 0）。
+///
+/// # 返回
+/// `(图片区宽, 图片区高, 适应缩放)`，缩放只缩小不放大。
+fn viewer_layout(disp_w: f32, disp_h: f32, img_w: u32, img_h: u32) -> (f32, f32, f32) {
+    // 窗口跟随显示器固定大小：宽约 75%、总高约 72%，上下左右留边框余量；
+    // max/min 链式写法避免极小显示器上 clamp 出现 min > max 的 panic。
+    let win_w = (disp_w * 0.75)
+        .round()
+        .max(MIN_VIEWER_W)
+        .min(disp_w - 20.0)
+        .max(480.0);
+    let win_h = (disp_h * 0.72)
+        .round()
+        .max(MIN_VIEWER_H)
+        .min(disp_h - 20.0)
+        .max(360.0);
+    let area_w = win_w;
+    let area_h = (win_h - TOOLBAR_H - STATUS_H).max(200.0);
+    // 适应缩放：完整落入图片区，只缩小不放大（小图居中 100% 显示更清晰）。
+    let fit = (area_w / img_w as f32)
+        .min(area_h / img_h as f32)
+        .clamp(MIN_ZOOM, 1.0);
+    (area_w, area_h, fit)
 }
 
 /// 打开图片预览窗口。
@@ -121,7 +173,7 @@ enum ViewerAction {
 /// - `cx`: 调用方上下文（全屏截图与区域浮层各调一次，泛型兼容）。
 /// - `preview`: 要展示的图片（路径 + 原图尺寸）。
 pub fn open_viewer<T: 'static>(main: Entity<RupixApp>, cx: &mut Context<T>, preview: PreviewImage) {
-    // 自适应缩放：图片完整落进 75% 显示区域，只缩小不放大。
+    // 固定窗口：按显示器算出图片区，图片居中、仅缩小适配。
     let (disp_w, disp_h) = cx
         .primary_display()
         .map(|d| {
@@ -129,33 +181,30 @@ pub fn open_viewer<T: 'static>(main: Entity<RupixApp>, cx: &mut Context<T>, prev
             (s.width.as_f32(), s.height.as_f32())
         })
         .unwrap_or((1920.0, 1080.0));
-    let fit = ((disp_w * 0.75) / preview.w as f32)
-        .min((disp_h * 0.75 - TOOLBAR_H) / preview.h as f32)
-        .clamp(MIN_ZOOM, 1.0);
-    // 三排工具条较宽，窗口最小 480 逻辑像素，图片居中。
-    let win_w = (preview.w as f32 * fit).round().max(480.0);
-    let win_h = (preview.h as f32 * fit).round().max(200.0);
+    let (area_w, area_h, fit) = viewer_layout(disp_w, disp_h, preview.w, preview.h);
     cap_log(&format!(
-        "预览窗口打开：img={}x{} fit={fit:.2}",
-        preview.w, preview.h
+        "预览窗口打开：img={}x{} area={}x{} fit={fit:.2}",
+        preview.w, preview.h, area_w as u32, area_h as u32
     ));
-    // 窗口高度 = 顶部三排工具条 + 图片区 + 底部状态栏。
-    let bounds = Bounds::centered(None, size(px(win_w), px(win_h + TOOLBAR_H + STATUS_H)), cx);
+    // 窗口高度 = 两排工具条 + 图片区 + 底部状态栏。
+    let bounds = Bounds::centered(
+        None,
+        size(px(area_w), px(area_h + TOOLBAR_H + STATUS_H)),
+        cx,
+    );
     let opened = cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from(format!(
-                    "Rupix 预览（{} × {}）",
-                    preview.w, preview.h
-                ))),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
+        viewer_window_options(bounds, &preview),
         move |window, cx| {
             let view = cx.new(|cx| {
-                ImageViewer::new(window, cx, main.clone(), preview.clone(), fit, win_w, win_h)
+                ImageViewer::new(
+                    window,
+                    cx,
+                    main.clone(),
+                    preview.clone(),
+                    fit,
+                    area_w,
+                    area_h,
+                )
             });
             // 打开即聚焦，Esc / 快捷键立即可用。
             let handle = view.read(cx).focus_handle.clone();
@@ -165,6 +214,25 @@ pub fn open_viewer<T: 'static>(main: Entity<RupixApp>, cx: &mut Context<T>, prev
     );
     if let Err(error) = opened {
         cap_log(&format!("预览窗口打开失败：{error:?}"));
+    }
+}
+
+/// 构造预览窗口选项：系统标题栏显示带图片尺寸的窗口名。
+///
+/// # 参数
+/// - `bounds`: 窗口初始边界（含两排工具条与状态栏占高）。
+/// - `preview`: 要展示的图片（取宽高写入窗口 / 任务栏标题）。
+fn viewer_window_options(bounds: Bounds<Pixels>, preview: &PreviewImage) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar: Some(TitlebarOptions {
+            title: Some(SharedString::from(format!(
+                "Rupix 预览（{} × {}）",
+                preview.w, preview.h
+            ))),
+            ..Default::default()
+        }),
+        ..Default::default()
     }
 }
 
@@ -231,7 +299,7 @@ pub fn open_image_for_edit_in_app(main: Entity<RupixApp>, cx: &mut rgpui::App) {
 
 /// 从 `App` 上下文直接按路径打开预览窗口（异步选图任务内部用）。
 fn open_viewer_in_app(main: Entity<RupixApp>, cx: &mut rgpui::App, preview: PreviewImage) {
-    // 自适应算法与 `open_viewer` 一致，窗口含三排工具条 + 底部状态栏。
+    // 固定窗口布局与 `open_viewer` 一致：窗口跟随显示器，图片居中适配。
     let (disp_w, disp_h) = cx
         .primary_display()
         .map(|d| {
@@ -239,31 +307,29 @@ fn open_viewer_in_app(main: Entity<RupixApp>, cx: &mut rgpui::App, preview: Prev
             (s.width.as_f32(), s.height.as_f32())
         })
         .unwrap_or((1920.0, 1080.0));
-    let fit = ((disp_w * 0.75) / preview.w as f32)
-        .min((disp_h * 0.75 - TOOLBAR_H) / preview.h as f32)
-        .clamp(MIN_ZOOM, 1.0);
-    let win_w = (preview.w as f32 * fit).round().max(480.0);
-    let win_h = (preview.h as f32 * fit).round().max(200.0);
+    let (area_w, area_h, fit) = viewer_layout(disp_w, disp_h, preview.w, preview.h);
     cap_log(&format!(
-        "预览窗口打开（本地图片）：img={}x{} fit={fit:.2}",
-        preview.w, preview.h
+        "预览窗口打开（本地图片）：img={}x{} area={}x{} fit={fit:.2}",
+        preview.w, preview.h, area_w as u32, area_h as u32
     ));
-    let bounds = Bounds::centered(None, size(px(win_w), px(win_h + TOOLBAR_H + STATUS_H)), cx);
+    let bounds = Bounds::centered(
+        None,
+        size(px(area_w), px(area_h + TOOLBAR_H + STATUS_H)),
+        cx,
+    );
     let opened = cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from(format!(
-                    "Rupix 预览（{} × {}）",
-                    preview.w, preview.h
-                ))),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
+        viewer_window_options(bounds, &preview),
         move |window, cx| {
             let view = cx.new(|cx| {
-                ImageViewer::new(window, cx, main.clone(), preview.clone(), fit, win_w, win_h)
+                ImageViewer::new(
+                    window,
+                    cx,
+                    main.clone(),
+                    preview.clone(),
+                    fit,
+                    area_w,
+                    area_h,
+                )
             });
             let handle = view.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
@@ -329,6 +395,11 @@ struct ImageViewer {
     show_color_picker: bool,
     /// 当前线宽（图片像素）。
     width: f32,
+    /// 线宽滑杆状态（操作排，拖动在 1–30px 内自由调节）。
+    width_slider: Entity<SliderState>,
+    /// 线宽滑杆订阅（持有以保持有效；字段本身无需读取）。
+    #[allow(dead_code)]
+    width_subscription: Subscription,
     /// 正在编辑的文字标注（点击后出现，回车/失焦提交）。
     text_editing: Option<TextEdit>,
     /// 文字背景是否显示（默认开启）。
@@ -351,6 +422,10 @@ struct ImageViewer {
     status: SharedString,
     /// 最近一次保存的文件路径（状态栏“打开文件 / 打开目录”用）。
     last_saved: Option<PathBuf>,
+    /// 是否有未保存的标注修改（Esc 关窗前据此决定是否弹出确认）。
+    dirty: bool,
+    /// 是否正在显示关闭确认浮层（有未保存修改时 Esc 弹出三选一）。
+    confirm_close: bool,
 }
 
 /// 文字工具正在编辑的状态：点击图片后出现，回车或失焦提交。
@@ -388,6 +463,23 @@ impl ImageViewer {
                     });
                 })
         });
+        // 线宽滑杆：1–30px 自由调节，拖动实时同步当前线宽。
+        let width_slider = cx.new(|_| {
+            SliderState::new()
+                .min(WIDTH_MIN)
+                .max(WIDTH_MAX)
+                .step(1.0)
+                .default_value(DEFAULT_WIDTH)
+        });
+        let width_subscription = cx.subscribe(
+            &width_slider,
+            |this: &mut Self, _state, event: &SliderEvent, cx| match event {
+                SliderEvent::Change(v) | SliderEvent::Release(v) => {
+                    this.width = normalize_width(v.start());
+                    cx.notify();
+                }
+            },
+        );
         // 马赛克预览直接采样底图；读取失败时仍保留导出能力，只是不显示实时像素化预览。
         let base_image = image::open(&preview.path)
             .ok()
@@ -411,6 +503,8 @@ impl ImageViewer {
             color_picker,
             show_color_picker: false,
             width: DEFAULT_WIDTH,
+            width_slider,
+            width_subscription,
             text_editing: None,
             text_bg: true,
             drag_text: None,
@@ -422,6 +516,9 @@ impl ImageViewer {
             focus_handle: cx.focus_handle(),
             status: SharedString::from("就绪"),
             last_saved: None,
+            // 新窗口无标注，自然是干净状态。
+            dirty: false,
+            confirm_close: false,
         }
     }
 
@@ -431,7 +528,21 @@ impl ImageViewer {
         cx.notify();
     }
 
-    /// 工具条按钮（文案 + 动作，id 保证唯一）。
+    /// 是否有未保存的标注修改（Esc 关窗前检查用）。
+    ///
+    /// 草稿是未提交的绘制，同样视为未保存，避免 Esc 直接丢弃。
+    fn has_unsaved_changes(&self) -> bool {
+        self.dirty || self.draft.is_some()
+    }
+
+    /// 保存并关闭：保存成功才关窗，失败则留在窗口看状态栏原因。
+    fn save_and_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.save_image(cx) {
+            window.remove_window();
+        }
+    }
+
+    /// 标题栏按钮（文案 + 动作，id 保证唯一，带悬停反馈）。
     fn bar_button(
         &self,
         cx: &mut Context<Self>,
@@ -448,13 +559,14 @@ impl ImageViewer {
             .cursor_pointer()
             .bg(rgb(0x3A3A3A))
             .text_color(rgb(0xFFFFFF))
+            .hover(|style| style.bg(rgb(0x4A4A4A)))
             .child(label)
             .on_click(move |_, window, cx| {
                 view.update(cx, |this, cx| this.handle(action, window, cx));
             })
     }
 
-    /// 小按钮（第二 / 三排工具用，选中态高亮，id 保证唯一）。
+    /// 小按钮（操作 / 标注排用，选中态高亮，id 保证唯一；压缩占宽用 px_1）。
     fn mini_button(
         &self,
         cx: &mut Context<Self>,
@@ -466,7 +578,7 @@ impl ImageViewer {
         let view = cx.entity();
         div()
             .id(format!("viewer-mini-{id}"))
-            .px_2()
+            .px_1()
             .py_1()
             .rounded_md()
             .text_xs()
@@ -483,7 +595,7 @@ impl ImageViewer {
             })
     }
 
-    /// 颜色块（第三排，选中态白色描边）。
+    /// 颜色块（标注排，选中态白色描边）。
     fn color_swatch(&self, cx: &mut Context<Self>, color: AnnoColor) -> impl IntoElement {
         let view = cx.entity();
         let selected = self.color == color;
@@ -519,8 +631,10 @@ impl ImageViewer {
                 cx.notify();
             }
             ViewerAction::Copy => self.copy_image(cx),
-            ViewerAction::Save => self.save_image(cx),
-            ViewerAction::Close => window.remove_window(),
+            ViewerAction::Save => {
+                // 工具条保存只管落盘，返回值（成功与否）由状态栏反馈。
+                let _ = self.save_image(cx);
+            }
             ViewerAction::Tool(tool) => {
                 // 切换工具时丢弃未提交的草稿，提交文字编辑，避免残留。
                 if self.text_editing.is_some() {
@@ -541,10 +655,7 @@ impl ImageViewer {
                 self.color = color;
                 cx.notify();
             }
-            ViewerAction::Width(width) => {
-                self.width = width;
-                cx.notify();
-            }
+            ViewerAction::WidthNudge(delta) => self.nudge_width(delta, window, cx),
             ViewerAction::TextBg => {
                 self.text_bg = !self.text_bg;
                 cx.notify();
@@ -567,6 +678,13 @@ impl ImageViewer {
                     cx.open_with_system(dir);
                 }
             }
+            ViewerAction::ConfirmSaveClose => self.save_and_close(window, cx),
+            ViewerAction::ConfirmDiscardClose => window.remove_window(),
+            ViewerAction::CancelCloseConfirm => {
+                // 取消关闭：收起确认浮层，留在窗口继续编辑。
+                self.confirm_close = false;
+                cx.notify();
+            }
         }
     }
 
@@ -574,6 +692,8 @@ impl ImageViewer {
     fn undo(&mut self, cx: &mut Context<Self>) {
         if let Some(shape) = self.shapes.pop() {
             self.redo_stack.push(shape);
+            // 标注集合已变更，后续 Esc 关窗需提示保存。
+            self.dirty = true;
             cx.notify();
         }
     }
@@ -582,6 +702,8 @@ impl ImageViewer {
     fn redo(&mut self, cx: &mut Context<Self>) {
         if let Some(shape) = self.redo_stack.pop() {
             self.shapes.push(shape);
+            // 标注集合已变更，后续 Esc 关窗需提示保存。
+            self.dirty = true;
             cx.notify();
         }
     }
@@ -595,6 +717,8 @@ impl ImageViewer {
         }
         if removed {
             self.redo_stack.clear();
+            // 删掉了已提交的标注，后续 Esc 关窗需提示保存。
+            self.dirty = true;
             cx.notify();
         }
     }
@@ -714,6 +838,8 @@ impl ImageViewer {
             // 点击已有文字 → 进入重新编辑模式。
             if let Some(idx) = self.hit_test_text(p) {
                 let old = self.shapes.remove(idx);
+                // 原文字已从画布取下（取消编辑也会丢失），先记为脏。
+                self.dirty = true;
                 if let Shape::Text {
                     pos,
                     content,
@@ -811,6 +937,8 @@ impl ImageViewer {
                     move_shape_clamped(shape, delta, self.preview.w as f32, self.preview.h as f32);
                 }
                 drag.last = p;
+                // 标注位置已变更，后续 Esc 关窗需提示保存。
+                self.dirty = true;
                 cx.notify();
             }
             return;
@@ -825,6 +953,8 @@ impl ImageViewer {
             if let Some(Shape::Text { pos, .. }) = self.shapes.get_mut(drag.idx) {
                 pos.0 = (p.0 - drag.offset.0).max(0.0);
                 pos.1 = (p.1 - drag.offset.1).max(0.0);
+                // 文字位置已变更，后续 Esc 关窗需提示保存。
+                self.dirty = true;
             }
             cx.notify();
             return;
@@ -899,6 +1029,8 @@ impl ImageViewer {
         {
             self.shapes.push(draft);
             self.redo_stack.clear();
+            // 新标注已提交，后续 Esc 关窗需提示保存。
+            self.dirty = true;
         }
         self.anchor = None;
         cx.notify();
@@ -951,6 +1083,8 @@ impl ImageViewer {
             self.shapes.push(shape);
             self.redo_stack.clear();
         }
+        // 文字已落盘为标注，后续 Esc 关窗需提示保存。
+        self.dirty = true;
         let fh = self.focus_handle.clone();
         window.focus(&fh, cx);
         cx.notify();
@@ -1043,10 +1177,16 @@ impl ImageViewer {
     }
 
     /// 保存烧录图到桌面并记入最近文件（结果就近显示在预览底部状态栏）。
-    fn save_image(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// # 返回
+    /// 保存成功返回 `true`；成功后清除未保存标记并收起关闭确认浮层。
+    fn save_image(&mut self, cx: &mut Context<Self>) -> bool {
         let main = self.main.clone();
-        // 保存永远另存为带时间戳的新文件，不覆盖原图（本地打开编辑的原图同样受保护）。
-        let dst = save_dir().join(format!(
+        // 保存永远另存为带时间戳的新文件，不覆盖原图（截图自动保存的原图同样受保护）。
+        // 目录被用户删掉时尝试重建，重建失败则本次保存会失败并提示（不崩溃）。
+        let dir = load_save_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let dst = dir.join(format!(
             "rupix-{}.png",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1068,7 +1208,16 @@ impl ImageViewer {
                 .unwrap_or("图片")
                 .to_string();
             self.last_saved = Some(dst.clone());
-            self.set_viewer_status(&format!("已保存 {name}（桌面）"), cx);
+            // 保存成功：脏标记清零，关闭确认浮层也不再需要。
+            self.dirty = false;
+            self.confirm_close = false;
+            // 状态栏显示文件名与所在目录名（自定义目录也能一眼看出存哪了）。
+            let loc = dst
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("?");
+            self.set_viewer_status(&format!("已保存 {name}（{loc}）"), cx);
             let msg = format!("已保存 {}", dst.display());
             main.update(cx, |state, cx| {
                 state.push_recent(dst, msg, cx);
@@ -1080,6 +1229,18 @@ impl ImageViewer {
             });
         }
         cx.refresh_windows();
+        saved
+    }
+
+    /// 步进调节线宽并同步滑杆位置（− / + 按钮与 [ ] 快捷键共用）。
+    fn nudge_width(&mut self, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let width = normalize_width(self.width + delta);
+        self.width = width;
+        // 同步滑杆 thumb，避免按钮与滑杆显示不一致。
+        self.width_slider.update(cx, |state, cx| {
+            state.set_value(width, window, cx);
+        });
+        cx.notify();
     }
 
     /// 按系数缩放。
@@ -1131,27 +1292,6 @@ impl ImageViewer {
         self.pan_last = None;
         cx.notify();
     }
-}
-
-/// 保存目录：桌面优先（兼容 OneDrive 接管），其次图片库，最后临时目录。
-fn save_dir() -> PathBuf {
-    let candidates = [
-        std::env::var("USERPROFILE")
-            .map(|home| PathBuf::from(home).join("Desktop"))
-            .ok(),
-        std::env::var("OneDrive")
-            .map(|root| PathBuf::from(root).join("Desktop"))
-            .ok(),
-        std::env::var("USERPROFILE")
-            .map(|home| PathBuf::from(home).join("Pictures"))
-            .ok(),
-    ];
-    for dir in candidates.into_iter().flatten() {
-        if dir.is_dir() {
-            return dir;
-        }
-    }
-    std::env::temp_dir()
 }
 
 /// 剪贴板缓存图片路径：保持文件存在，保证复制后资源管理器能异步读取。
@@ -1461,10 +1601,37 @@ impl Render for ImageViewer {
                 }
                 let modi = &ev.keystroke.modifiers;
                 match ev.keystroke.key.as_str() {
-                    "escape" => window.remove_window(),
+                    // Esc 优先级：关闭确认（二次 Esc 取消）> 拾色器面板 > 脏检查关窗。
+                    "escape" => {
+                        if this.confirm_close {
+                            // 确认浮层已展开：二次 Esc 视为取消，留在窗口继续编辑。
+                            this.confirm_close = false;
+                            cx.notify();
+                        } else if this.show_color_picker {
+                            // 优先收起拾色器面板，避免想关面板却退出整个窗口。
+                            this.show_color_picker = false;
+                            cx.notify();
+                        } else if this.has_unsaved_changes() {
+                            // 有未保存标注：先弹确认浮层，不直接关窗丢数据。
+                            // 未提交的草稿本就不会进保存结果，这里直接丢弃。
+                            this.draft = None;
+                            this.anchor = None;
+                            this.confirm_close = true;
+                            cx.notify();
+                        } else {
+                            window.remove_window();
+                        }
+                    }
+                    // 确认浮层中回车 = 保存并关闭（与按钮一致）。
+                    "enter" if this.confirm_close => {
+                        this.save_and_close(window, cx);
+                    }
                     "+" | "=" => this.zoom_by(ZOOM_STEP, cx),
                     "-" | "_" => this.zoom_by(1.0 / ZOOM_STEP, cx),
                     "0" => this.handle(ViewerAction::Fit, window, cx),
+                    // [ / ] 步进调节线宽（与滑杆双向同步）。
+                    "[" => this.handle(ViewerAction::WidthNudge(-1.0), window, cx),
+                    "]" => this.handle(ViewerAction::WidthNudge(1.0), window, cx),
                     "z" if modi.control && !modi.shift => {
                         this.handle(ViewerAction::Undo, window, cx);
                     }
@@ -1477,7 +1644,7 @@ impl Render for ImageViewer {
                     _ => {}
                 }
             }))
-            // 第一排：查看。
+            // 操作排：查看缩放 + 撤销重做 + 线宽底色 + 文件操作（关闭走系统标题栏 / Esc）。
             .child(
                 div()
                     .flex()
@@ -1487,20 +1654,55 @@ impl Render for ImageViewer {
                     .px_3()
                     .bg(rgb(0x2D2D2D))
                     .child(self.bar_button(cx, "−", ViewerAction::ZoomOut))
-                    .child(div().text_sm().w(px(52.)).child(percent))
+                    .child(div().text_sm().w(px(48.)).child(percent))
                     .child(self.bar_button(cx, "+", ViewerAction::ZoomIn))
                     .child(self.bar_button(cx, "适应", ViewerAction::Fit))
-                    .child(self.bar_button(cx, "复制", ViewerAction::Copy))
-                    .child(self.bar_button(cx, "保存", ViewerAction::Save))
-                    .child(self.bar_button(cx, "关闭", ViewerAction::Close))
+                    .child(self.mini_button(cx, "undo", "撤销", ViewerAction::Undo, false))
+                    .child(self.mini_button(cx, "redo", "重做", ViewerAction::Redo, false))
+                    // 线宽：− / + 步进 + 滑杆自由调节 + 当前值显示。
+                    .child(self.mini_button(
+                        cx,
+                        "w-down",
+                        "−",
+                        ViewerAction::WidthNudge(-1.0),
+                        false,
+                    ))
                     .child(
                         div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(div().text_xs().text_color(rgb(0xBBBBBB)).child("线宽"))
+                            .child(div().w(px(110.)).child(Slider::new(&self.width_slider)))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .w(px(38.))
+                                    .text_color(rgb(0xCCCCCC))
+                                    .child(format!("{}px", self.width.round() as u32)),
+                            ),
+                    )
+                    .child(self.mini_button(cx, "w-up", "+", ViewerAction::WidthNudge(1.0), false))
+                    .child(self.mini_button(
+                        cx,
+                        "text-bg",
+                        "底色",
+                        ViewerAction::TextBg,
+                        self.text_bg,
+                    ))
+                    .child(self.bar_button(cx, "复制", ViewerAction::Copy))
+                    .child(self.bar_button(cx, "保存", ViewerAction::Save))
+                    .child(
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
                             .text_xs()
+                            .text_right()
                             .text_color(rgb(0x999999))
-                            .child(format!("{w} × {h}（Ctrl+滚轮缩放）")),
+                            .child("Ctrl+滚轮缩放 · [ ]线宽 · Esc 关闭"),
                     ),
             )
-            // 第二排：标注工具 + 撤销重做。
+            // 标注排：标注工具 + 预设颜色（精简，自定义色走取色器）+ 提示。
             .child(
                 div()
                     .flex()
@@ -1572,29 +1774,13 @@ impl Render for ImageViewer {
                         ViewerAction::Tool(AnnoTool::Text),
                         self.tool == AnnoTool::Text,
                     ))
-                    .child(self.mini_button(cx, "undo", "撤销", ViewerAction::Undo, false))
-                    .child(self.mini_button(cx, "redo", "重做", ViewerAction::Redo, false)),
-            )
-            // 第三排：颜色 + 线宽 + 背景开关 + 提示。
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .h(px(ROW_H))
-                    .px_3()
-                    .bg(rgb(0x2D2D2D))
+                    // 预设颜色精简为 6 色，其余自定义色走取色器。
                     .child(self.color_swatch(cx, AnnoColor::RED))
                     .child(self.color_swatch(cx, AnnoColor::YELLOW))
                     .child(self.color_swatch(cx, AnnoColor::GREEN))
                     .child(self.color_swatch(cx, AnnoColor::BLUE))
                     .child(self.color_swatch(cx, AnnoColor::WHITE))
                     .child(self.color_swatch(cx, AnnoColor::BLACK))
-                    .child(self.color_swatch(cx, AnnoColor::ORANGE))
-                    .child(self.color_swatch(cx, AnnoColor::CYAN))
-                    .child(self.color_swatch(cx, AnnoColor::PURPLE))
-                    .child(self.color_swatch(cx, AnnoColor::PINK))
-                    .child(self.color_swatch(cx, AnnoColor::GRAY))
                     .child(self.mini_button(
                         cx,
                         "color-picker",
@@ -1602,44 +1788,30 @@ impl Render for ImageViewer {
                         ViewerAction::ToggleColorPicker,
                         self.show_color_picker,
                     ))
-                    .child(
+                    // 当前色指示：色块 + hex，自定义色一眼可见（纯文字看不出颜色）。
+                    .child({
+                        let current = self.color.to_rgpui();
                         div()
-                            .text_xs()
-                            .text_color(rgb(0xCCCCCC))
-                            .child(self.color.to_hex()),
-                    )
-                    .child(self.mini_button(
-                        cx,
-                        "w-thin",
-                        "细",
-                        ViewerAction::Width(2.0),
-                        self.width == 2.0,
-                    ))
-                    .child(self.mini_button(
-                        cx,
-                        "w-mid",
-                        "中",
-                        ViewerAction::Width(5.0),
-                        self.width == 5.0,
-                    ))
-                    .child(self.mini_button(
-                        cx,
-                        "w-thick",
-                        "粗",
-                        ViewerAction::Width(9.0),
-                        self.width == 9.0,
-                    ))
-                    .child(self.mini_button(
-                        cx,
-                        "text-bg",
-                        if self.text_bg {
-                            "有底色"
-                        } else {
-                            "无底色"
-                        },
-                        ViewerAction::TextBg,
-                        self.text_bg,
-                    ))
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .w(px(14.))
+                                    .h(px(14.))
+                                    .rounded_sm()
+                                    .border_1()
+                                    .border_color(rgb(0x666666))
+                                    .bg(current),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(0xCCCCCC))
+                                    .child(self.color.to_hex()),
+                            )
+                    })
+                    // 线宽与文字底色在操作排，避免标注排过宽。
                     .child(
                         if self.tool == AnnoTool::Text && self.text_editing.is_some() {
                             div()
@@ -1865,7 +2037,7 @@ impl Render for ImageViewer {
                             .h(px(dh))
                         }),
                 );
-                if self.show_color_picker {
+                let area = if self.show_color_picker {
                     area.child(
                         div()
                             .absolute()
@@ -1887,6 +2059,12 @@ impl Render for ImageViewer {
                     )
                 } else {
                     area
+                };
+                // 关闭确认浮层：有未保存修改时 Esc 弹出，模态盖住图片区防误触。
+                if self.confirm_close {
+                    area.child(self.close_confirm(cx))
+                } else {
+                    area
                 }
             })
             // 底部状态栏：复制 / 保存结果就近显示 + 图片信息。
@@ -1895,16 +2073,99 @@ impl Render for ImageViewer {
 }
 
 impl ImageViewer {
+    /// 关闭确认浮层：有未保存标注时 Esc 弹出，居中模态三选一。
+    ///
+    /// 浮层盖住图片区并吞掉鼠标 / 滚轮事件，避免误触继续标注；
+    /// 点击遮罩不关闭（防误触丢数据），只走保存并关闭 / 直接关闭 / 取消。
+    fn close_confirm(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .absolute()
+            .left(px(0.0))
+            .top(px(0.0))
+            .right(px(0.0))
+            .bottom(px(0.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(Rgba {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.55,
+            })
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _ev, _, cx| {
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|_, _ev, _, cx| {
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_move(cx.listener(|_, _ev, _, cx| cx.stop_propagation()))
+            .on_scroll_wheel(cx.listener(|_, _ev, _, cx| cx.stop_propagation()))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .p_4()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(0x555555))
+                    .bg(rgb(0x2D2D2D))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(0xFFFFFF))
+                            .child("有未保存的标注修改，关闭将丢失，是否先保存？"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(self.mini_button(
+                                cx,
+                                "confirm-save-close",
+                                "保存并关闭",
+                                ViewerAction::ConfirmSaveClose,
+                                true,
+                            ))
+                            .child(self.mini_button(
+                                cx,
+                                "confirm-discard-close",
+                                "直接关闭",
+                                ViewerAction::ConfirmDiscardClose,
+                                false,
+                            ))
+                            .child(self.mini_button(
+                                cx,
+                                "confirm-cancel-close",
+                                "取消",
+                                ViewerAction::CancelCloseConfirm,
+                                false,
+                            )),
+                    ),
+            )
+    }
+
     /// 底部状态栏（复制 / 保存反馈 + 图片信息 + 已保存快捷入口）。
     fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // 右侧图片信息：尺寸 / 缩放 / 标注数，一目了然。
-        let info = format!(
+        // 右侧图片信息：尺寸 / 缩放 / 标注数，一目了然；有未保存修改时追加提醒。
+        let mut info = format!(
             "{} × {} · {}% · {} 个标注",
             self.preview.w,
             self.preview.h,
             (self.zoom * 100.0).round() as u32,
             self.shapes.len()
         );
+        if self.dirty {
+            info.push_str(" · 未保存");
+        }
         let mut row = div()
             .flex()
             .items_center()
@@ -1996,5 +2257,40 @@ mod tests {
             },
         ];
         assert_eq!(erase_hit(&shapes, (75.0, 75.0), 8.0), Some(1));
+    }
+
+    /// 固定窗口布局：小截图不放大（居中 100% 显示），窗口保持最小尺寸。
+    #[test]
+    fn viewer_layout_small_image_keeps_full_size() {
+        let (area_w, area_h, fit) = viewer_layout(1920.0, 1080.0, 300, 200);
+        // 小图不放大，窗口不随图片缩小。
+        assert!((fit - 1.0).abs() < f32::EPSILON);
+        assert!(area_w >= MIN_VIEWER_W);
+        assert!(area_h >= 200.0);
+    }
+
+    /// 固定窗口布局：大截图按比例缩小，完整落入图片区。
+    #[test]
+    fn viewer_layout_large_image_shrinks_to_fit() {
+        let (area_w, area_h, fit) = viewer_layout(1920.0, 1080.0, 3840, 2160);
+        assert!(fit < 1.0);
+        assert!(3840.0 * fit <= area_w + 1.0);
+        assert!(2160.0 * fit <= area_h + 1.0);
+    }
+
+    /// 固定窗口布局：极小显示器也不 panic，缩放有下限。
+    #[test]
+    fn viewer_layout_tiny_display_no_panic() {
+        let (area_w, area_h, fit) = viewer_layout(800.0, 600.0, 1920, 1080);
+        assert!(area_w > 0.0 && area_h > 0.0);
+        assert!(fit >= MIN_ZOOM);
+    }
+
+    /// 线宽规范化：钳制到滑杆范围并取整。
+    #[test]
+    fn normalize_width_cases() {
+        assert_eq!(normalize_width(0.2), WIDTH_MIN);
+        assert_eq!(normalize_width(4.6), 5.0);
+        assert_eq!(normalize_width(99.0), WIDTH_MAX);
     }
 }

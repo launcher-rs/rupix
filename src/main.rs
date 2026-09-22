@@ -46,11 +46,10 @@ fn main() {
             });
         }
 
-        // 读取用户保存的热键（区域 / 全屏 / 取色 / 窗口各一个），首次运行使用默认值。
+        // 读取用户保存的热键（区域 / 全屏 / 取色各一个），首次运行使用默认值。
         let region_hotkey = hotkey::load_hotkey_string(HotkeyKind::Region);
         let full_hotkey = hotkey::load_hotkey_string(HotkeyKind::Full);
         let picker_hotkey = hotkey::load_hotkey_string(HotkeyKind::Picker);
-        let window_hotkey = hotkey::load_hotkey_string(HotkeyKind::Window);
 
         // 主窗口实体需要在构建闭包外使用，用容器带出来。
         let main_cell: Rc<RefCell<Option<Entity<RupixApp>>>> = Rc::new(RefCell::new(None));
@@ -58,8 +57,7 @@ fn main() {
         let region_for_build = region_hotkey.clone();
         let full_for_build = full_hotkey.clone();
         let picker_for_build = picker_hotkey.clone();
-        let window_for_build = window_hotkey.clone();
-        // 四张热键卡片，默认窗口加高。
+        // 三张热键卡片，默认窗口加高。
         let bounds = Bounds::centered(None, size(px(560.), px(790.)), cx);
         let main_win: WindowHandle<RupixApp> = cx
             .open_window(
@@ -83,7 +81,6 @@ fn main() {
                             region_for_build,
                             full_for_build,
                             picker_for_build,
-                            window_for_build,
                         )
                     });
                     *main_cell_for_build.borrow_mut() = Some(view.clone());
@@ -104,25 +101,19 @@ fn main() {
         // 托盘常驻：截图入口与退出都走这里。
         tray::setup_tray(cx, main_win, main.clone());
 
-        // 注册四个系统级全局热键（失焦可用），触发走托盘同款入口。
+        // 注册三个系统级全局热键（失焦可用），触发走托盘同款入口。
         // 全部成功才报组合状态，任一失败展示全部错误（成功的不受影响）。
         let region_result = hotkey::apply_global_hotkey(cx, HotkeyKind::Region, &region_hotkey);
         let full_result = hotkey::apply_global_hotkey(cx, HotkeyKind::Full, &full_hotkey);
         let picker_result = hotkey::apply_global_hotkey(cx, HotkeyKind::Picker, &picker_hotkey);
-        let window_result = hotkey::apply_global_hotkey(cx, HotkeyKind::Window, &window_hotkey);
         let mut boot_errors = Vec::new();
-        for result in [
-            &region_result,
-            &full_result,
-            &picker_result,
-            &window_result,
-        ] {
+        for result in [&region_result, &full_result, &picker_result] {
             if let Err(error) = result {
                 boot_errors.push(error.clone());
             }
         }
         let boot_msg = if boot_errors.is_empty() {
-            format!("就绪：区域 {region_hotkey}，全屏 {full_hotkey}，取色 {picker_hotkey}，窗口 {window_hotkey}（窗口已隐藏到托盘）")
+            format!("就绪：区域 {region_hotkey}，全屏 {full_hotkey}，取色 {picker_hotkey}（窗口已隐藏到托盘）")
         } else {
             boot_errors.join("；")
         };
@@ -135,8 +126,6 @@ fn main() {
                 tray::trigger_capture(cx, main_win, main.clone(), true);
             } else if id == HotkeyKind::Picker.id() {
                 tray::trigger_picker(cx, main_win, main.clone());
-            } else if id == HotkeyKind::Window.id() {
-                tray::trigger_window(cx, main_win, main.clone());
             }
         });
 

@@ -8,7 +8,7 @@
 pub struct CaptureWindow {
     /// 窗口标题（高亮徽标展示用）。
     pub title: String,
-    /// 窗口矩形（物理像素：左、上、右、下，含边框）。
+    /// 窗口矩形（物理像素：左、上、右、下，可见边框，不含不可见阴影）。
     pub rect: (i32, i32, i32, i32),
 }
 
@@ -44,7 +44,7 @@ pub fn hit_test(x: i32, y: i32) -> Option<CaptureWindow> {
 mod imp {
     use windows::Win32::{
         Foundation::{HWND, LPARAM, RECT, TRUE},
-        Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute},
+        Graphics::Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute},
         System::Threading::GetCurrentProcessId,
         UI::WindowsAndMessaging::{
             EnumWindows, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
@@ -88,6 +88,28 @@ mod imp {
             .to_string()
     }
 
+    /// 窗口可见矩形：优先 DWM 扩展帧边界（去掉不可见缩放边框与阴影，
+    /// `GetWindowRect` 会多出一圈透明边框，截出来比窗口大一圈）。
+    /// DWM 取不到时（如无边框特殊窗口）回退到 `GetWindowRect`。
+    fn visible_rect(hwnd: HWND) -> Option<RECT> {
+        let mut frame = RECT::default();
+        let dwm_ok = unsafe {
+            DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_EXTENDED_FRAME_BOUNDS,
+                &mut frame as *mut RECT as *mut std::ffi::c_void,
+                std::mem::size_of::<RECT>() as u32,
+            )
+        }
+        .is_ok();
+        if dwm_ok {
+            return Some(frame);
+        }
+        let mut rect = RECT::default();
+        unsafe { GetWindowRect(hwnd, &mut rect) }.ok()?;
+        Some(rect)
+    }
+
     pub fn list_windows() -> Vec<CaptureWindow> {
         // 先拿全量句柄，再逐个过滤（过滤条件多，EnumWindows 回调里只收集）。
         let mut hwnds: Vec<HWND> = Vec::new();
@@ -116,10 +138,10 @@ mod imp {
             if pid == own_pid {
                 continue;
             }
-            let mut rect = RECT::default();
-            if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
+            // 可见矩形走 DWM 扩展帧边界，不含不可见阴影边框。
+            let Some(rect) = visible_rect(hwnd) else {
                 continue;
-            }
+            };
             let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
             // 过小矩形多为阴影残留或后台代理窗口。
             if w < 60 || h < 60 {

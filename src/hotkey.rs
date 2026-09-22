@@ -5,27 +5,26 @@
 
 use rgpui::{App, Keystroke, components::HotkeyValue};
 
-/// 截图热键种类：区域、全屏、取色、窗口截图各一个系统级全局热键。
+/// 截图热键种类：区域、全屏、取色各一个系统级全局热键。
+///（窗口吸附已合入区域截图，不再需要独立窗口热键；
+/// 老版本残留的 `rupix-hotkey-window.txt` 会被忽略，不删除用户文件。）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HotkeyKind {
-    /// 区域截图。
+    /// 区域截图（含窗口吸附）。
     Region,
     /// 全屏截图。
     Full,
     /// 屏幕取色。
     Picker,
-    /// 窗口截图。
-    Window,
 }
 
 impl HotkeyKind {
-    /// 系统注册编号（四种热键互不干扰）。
+    /// 系统注册编号（三种热键互不干扰）。
     pub fn id(self) -> u32 {
         match self {
             HotkeyKind::Region => 1,
             HotkeyKind::Full => 2,
             HotkeyKind::Picker => 3,
-            HotkeyKind::Window => 4,
         }
     }
 
@@ -35,7 +34,6 @@ impl HotkeyKind {
             HotkeyKind::Region => "ctrl-shift-a",
             HotkeyKind::Full => "ctrl-shift-f",
             HotkeyKind::Picker => "ctrl-shift-p",
-            HotkeyKind::Window => "ctrl-shift-w",
         }
     }
 
@@ -45,7 +43,6 @@ impl HotkeyKind {
             HotkeyKind::Region => "rupix-hotkey.txt",
             HotkeyKind::Full => "rupix-hotkey-full.txt",
             HotkeyKind::Picker => "rupix-hotkey-picker.txt",
-            HotkeyKind::Window => "rupix-hotkey-window.txt",
         }
     }
 
@@ -55,7 +52,6 @@ impl HotkeyKind {
             HotkeyKind::Region => "区域截图",
             HotkeyKind::Full => "全屏截图",
             HotkeyKind::Picker => "屏幕取色",
-            HotkeyKind::Window => "窗口截图",
         }
     }
 }
