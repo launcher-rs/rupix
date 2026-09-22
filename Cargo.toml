@@ -6,10 +6,20 @@ license = "Apache-2.0"
 
 [dependencies]
 # 本地 rgpui 源码：截图能力需要开启 screen-capture 特性。
-rgpui = { version = "1.3.0", features = ["screen-capture"] }
-rgpui-platform = { version = "1.3.0", features = ["screen-capture"] }
+rgpui = { git="https://github.com/launcher-rs/rgpui.git", features = ["screen-capture"] }
+rgpui-platform = { git="https://github.com/launcher-rs/rgpui.git", features = ["screen-capture"] }
 # 图片编解码与像素操作：首帧保存、选区裁剪、马赛克、导出 PNG。
-image = "0.25"
+# 只开常用格式：全默认会经特性统一把 avif（rav1e 整套编码器）/ tiff / exr 等
+# 重新引入，抵消 rgpui 的体积裁剪；冷门格式在“打开图片编辑”时报不支持。
+image = { version = "0.25", default-features = false, features = [
+  "png",
+  "jpeg",
+  "gif",
+  "bmp",
+  "ico",
+  "webp",
+  "pnm",
+] }
 # 字形光栅化：把文字标注烧录进导出图片（系统字体文件加载）。
 ab_glyph = "0.2"
 
@@ -19,14 +29,25 @@ ab_glyph = "0.2"
 inspector = ["rgpui/inspector"]
 
 # release 优化：截图工具常驻后台，启动速度与包体积优先。
+# 日常发版用 thin LTO（构建快）；打安装包用下面的 size 档（体积最小）。
 [profile.release]
 # 最高优化等级，图片编解码与标注烧录受益明显。
 opt-level = 3
-# 全程序优化，跨 crate 内联（rgpui / image 均受益），链接稍慢可接受。
-lto = true
+# 跨 crate 内联 + 死代码消除，增量代价可接受（rgpui 体积指南 §2.1）。
+lto = "thin"
 # 单代码生成单元，配合 lto 进一步内联，牺牲并行编译速度换运行速度。
 codegen-units = 1
 # 剥离符号表，减小发布包体积。
+strip = true
+
+# size 档：只用于打安装包（构建慢，体积最小），日常开发继续用 release。
+[profile.size]
+inherits = "release"
+# 体积优先。
+opt-level = "z"
+# fat LTO：比 thin 更彻底的跨 crate 内联与死代码消除。
+lto = true
+codegen-units = 1
 strip = true
 
 # Windows 双格式剪贴板（图片 + 文件）需要直接调用系统剪贴板 API，
@@ -44,6 +65,8 @@ windows = { version = "0.62", features = [
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+
 
 [build-dependencies]
 # Windows exe 图标嵌入（任务栏 / 资源管理器显示应用 logo），仅 build.rs 使用。
