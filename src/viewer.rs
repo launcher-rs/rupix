@@ -36,6 +36,7 @@ use crate::{
         copy_image_and_file_to_clipboard, copy_png_to_clipboard, load_system_font, png_bytes,
         render_export,
     },
+    i18n::{tr, tr_fmt},
     shapes::{AnnoColor, PixelRect, Shape},
 };
 
@@ -226,9 +227,9 @@ fn viewer_window_options(bounds: Bounds<Pixels>, preview: &PreviewImage) -> Wind
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
-            title: Some(SharedString::from(format!(
-                "Rupix 预览（{} × {}）",
-                preview.w, preview.h
+            title: Some(SharedString::from(tr_fmt(
+                "viewer.title",
+                &[("w", &preview.w.to_string()), ("h", &preview.h.to_string())],
             ))),
             ..Default::default()
         }),
@@ -272,7 +273,7 @@ pub fn open_image_for_edit_in_app(main: Entity<RupixApp>, cx: &mut rgpui::App) {
         files: true,
         directories: false,
         multiple: false,
-        prompt: Some("选择要编辑的图片".into()),
+        prompt: Some(tr("image.pick_prompt").into()),
     });
     cx.spawn(async move |cx| {
         let Ok(Ok(Some(paths))) = receiver.await else {
@@ -285,7 +286,7 @@ pub fn open_image_for_edit_in_app(main: Entity<RupixApp>, cx: &mut rgpui::App) {
             // 非图片：回写设置窗口状态，提示用户。
             cx.update(|cx| {
                 cx.update_entity(&main, |state, cx| {
-                    state.set_status("所选文件不是有效图片", cx);
+                    state.set_status(&tr("image.invalid"), cx);
                 });
             });
             return;
@@ -514,7 +515,7 @@ impl ImageViewer {
             font: None,
             font_loaded: false,
             focus_handle: cx.focus_handle(),
-            status: SharedString::from("就绪"),
+            status: SharedString::from(tr("viewer.ready")),
             last_saved: None,
             // 新窗口无标注，自然是干净状态。
             dirty: false,
@@ -546,10 +547,11 @@ impl ImageViewer {
     fn bar_button(
         &self,
         cx: &mut Context<Self>,
-        label: &'static str,
+        label: impl Into<String>,
         action: ViewerAction,
     ) -> impl IntoElement {
         let view = cx.entity();
+        let label: String = label.into();
         div()
             .id(format!("viewer-btn-{label}"))
             .px_2()
@@ -571,11 +573,12 @@ impl ImageViewer {
         &self,
         cx: &mut Context<Self>,
         id: &str,
-        label: &'static str,
+        label: impl Into<String>,
         action: ViewerAction,
         selected: bool,
     ) -> impl IntoElement {
         let view = cx.entity();
+        let label: String = label.into();
         div()
             .id(format!("viewer-mini-{id}"))
             .px_1()
@@ -848,7 +851,9 @@ impl ImageViewer {
                 } = old
                 {
                     self.color = color;
-                    let input = cx.new(|cx| InputState::new(window, cx).placeholder("输入文字"));
+                    let input = cx.new(|cx| {
+                        InputState::new(window, cx).placeholder(tr("viewer.text_placeholder"))
+                    });
                     // 用已有文字填充输入框。
                     input.update(cx, |state, cx| {
                         state.set_value(content.clone(), window, cx);
@@ -1038,7 +1043,8 @@ impl ImageViewer {
 
     /// 点击后进入文字编辑模式：在图片上创建 inline 输入框。
     fn place_text(&mut self, img_pos: (f32, f32), window: &mut Window, cx: &mut Context<Self>) {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("输入文字"));
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(tr("viewer.text_placeholder")));
         let container_pos = (img_pos.0 * self.zoom, img_pos.1 * self.zoom);
         self.text_editing = Some(TextEdit {
             img_pos,
@@ -1120,28 +1126,31 @@ impl ImageViewer {
             match std::fs::read(&self.preview.path) {
                 Ok(bytes) => (Some(bytes), self.preview.path.clone()),
                 Err(error) => {
-                    self.set_viewer_status(&format!("复制失败：读取图片失败：{error}"), cx);
+                    let msg = tr_fmt("viewer.copy_read_fail", &[("error", &error.to_string())]);
+                    self.set_viewer_status(&msg, cx);
                     return;
                 }
             }
         } else {
             let Some(img) = self.burn_shapes() else {
-                self.set_viewer_status("复制失败：导出图片失败", cx);
+                self.set_viewer_status(&tr("viewer.export_fail"), cx);
                 return;
             };
             let Some(bytes) = png_bytes(&img) else {
-                self.set_viewer_status("复制失败：导出图片失败", cx);
+                self.set_viewer_status(&tr("viewer.export_fail"), cx);
                 return;
             };
             let path = clipboard_png_path();
             if let Some(parent) = path.parent()
                 && let Err(error) = std::fs::create_dir_all(parent)
             {
-                self.set_viewer_status(&format!("复制失败：创建缓存目录失败：{error}"), cx);
+                let msg = tr_fmt("viewer.cache_dir_fail", &[("error", &error.to_string())]);
+                self.set_viewer_status(&msg, cx);
                 return;
             }
             if let Err(error) = std::fs::write(&path, &bytes) {
-                self.set_viewer_status(&format!("复制失败：写入剪贴板文件失败：{error}"), cx);
+                let msg = tr_fmt("viewer.cache_write_fail", &[("error", &error.to_string())]);
+                self.set_viewer_status(&msg, cx);
                 return;
             }
             (Some(bytes), path)
@@ -1151,23 +1160,26 @@ impl ImageViewer {
         // 双格式写入：一次搞定图片粘贴（Word / 画图）与文件粘贴（资源管理器）。
         match copy_image_and_file_to_clipboard(&png, &file_path) {
             Ok(()) => {
-                let msg = "已复制：在 Word/画图中粘贴为图片，在文件夹中粘贴为文件";
-                self.set_viewer_status(msg, cx);
-                let msg = msg.to_string();
+                let msg = tr("viewer.copy_ok");
+                self.set_viewer_status(&msg, cx);
                 main.update(cx, |state, cx| state.set_status(&msg, cx));
             }
             Err(file_error) => {
                 // 双格式失败时回退到纯图片复制，保证 Word 粘贴仍可用。
                 match copy_png_to_clipboard(cx, &png) {
                     Ok(()) => {
-                        let msg = format!("已复制为图片；文件粘贴不可用：{file_error}");
+                        let msg = tr_fmt(
+                            "viewer.copy_img_only",
+                            &[("error", &file_error.to_string())],
+                        );
                         self.set_viewer_status(&msg, cx);
                         main.update(cx, |state, cx| state.set_status(&msg, cx));
                     }
                     Err(error) => {
-                        self.set_viewer_status(&format!("复制失败：{error}"), cx);
+                        let msg = tr_fmt("viewer.copy_fail", &[("error", &error.to_string())]);
+                        self.set_viewer_status(&msg, cx);
                         main.update(cx, |state, cx| {
-                            state.set_status(&format!("复制失败：{error}"), cx);
+                            state.set_status(&msg, cx);
                         });
                     }
                 }
@@ -1176,7 +1188,7 @@ impl ImageViewer {
         cx.refresh_windows();
     }
 
-    /// 保存烧录图到桌面并记入最近文件（结果就近显示在预览底部状态栏）。
+    /// 保存烧录图到默认保存目录并记入最近文件（结果就近显示在预览底部状态栏）。
     ///
     /// # 返回
     /// 保存成功返回 `true`；成功后清除未保存标记并收起关闭确认浮层。
@@ -1205,7 +1217,7 @@ impl ImageViewer {
             let name = dst
                 .file_name()
                 .and_then(|n| n.to_str())
-                .unwrap_or("图片")
+                .unwrap_or(&tr("viewer.image_fallback"))
                 .to_string();
             self.last_saved = Some(dst.clone());
             // 保存成功：脏标记清零，关闭确认浮层也不再需要。
@@ -1217,15 +1229,16 @@ impl ImageViewer {
                 .and_then(|p| p.file_name())
                 .and_then(|n| n.to_str())
                 .unwrap_or("?");
-            self.set_viewer_status(&format!("已保存 {name}（{loc}）"), cx);
-            let msg = format!("已保存 {}", dst.display());
+            let status_msg = tr_fmt("viewer.saved", &[("name", &name), ("loc", loc)]);
+            self.set_viewer_status(&status_msg, cx);
+            let msg = tr_fmt("viewer.saved_full", &[("path", &dst.display().to_string())]);
             main.update(cx, |state, cx| {
                 state.push_recent(dst, msg, cx);
             });
         } else {
-            self.set_viewer_status("保存失败", cx);
+            self.set_viewer_status(&tr("viewer.save_fail"), cx);
             main.update(cx, |state, cx| {
-                state.set_status("保存失败", cx);
+                state.set_status(&tr("viewer.save_fail"), cx);
             });
         }
         cx.refresh_windows();
@@ -1656,9 +1669,21 @@ impl Render for ImageViewer {
                     .child(self.bar_button(cx, "−", ViewerAction::ZoomOut))
                     .child(div().text_sm().w(px(48.)).child(percent))
                     .child(self.bar_button(cx, "+", ViewerAction::ZoomIn))
-                    .child(self.bar_button(cx, "适应", ViewerAction::Fit))
-                    .child(self.mini_button(cx, "undo", "撤销", ViewerAction::Undo, false))
-                    .child(self.mini_button(cx, "redo", "重做", ViewerAction::Redo, false))
+                    .child(self.bar_button(cx, tr("viewer.fit"), ViewerAction::Fit))
+                    .child(self.mini_button(
+                        cx,
+                        "undo",
+                        tr("viewer.undo"),
+                        ViewerAction::Undo,
+                        false,
+                    ))
+                    .child(self.mini_button(
+                        cx,
+                        "redo",
+                        tr("viewer.redo"),
+                        ViewerAction::Redo,
+                        false,
+                    ))
                     // 线宽：− / + 步进 + 滑杆自由调节 + 当前值显示。
                     .child(self.mini_button(
                         cx,
@@ -1672,7 +1697,12 @@ impl Render for ImageViewer {
                             .flex()
                             .items_center()
                             .gap_1()
-                            .child(div().text_xs().text_color(rgb(0xBBBBBB)).child("线宽"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(0xBBBBBB))
+                                    .child(tr("viewer.line_width")),
+                            )
                             .child(div().w(px(110.)).child(Slider::new(&self.width_slider)))
                             .child(
                                 div()
@@ -1686,12 +1716,12 @@ impl Render for ImageViewer {
                     .child(self.mini_button(
                         cx,
                         "text-bg",
-                        "底色",
+                        tr("viewer.text_bg"),
                         ViewerAction::TextBg,
                         self.text_bg,
                     ))
-                    .child(self.bar_button(cx, "复制", ViewerAction::Copy))
-                    .child(self.bar_button(cx, "保存", ViewerAction::Save))
+                    .child(self.bar_button(cx, tr("viewer.copy"), ViewerAction::Copy))
+                    .child(self.bar_button(cx, tr("viewer.save"), ViewerAction::Save))
                     .child(
                         div()
                             .flex_1()
@@ -1699,7 +1729,7 @@ impl Render for ImageViewer {
                             .text_xs()
                             .text_right()
                             .text_color(rgb(0x999999))
-                            .child("Ctrl+滚轮缩放 · [ ]线宽 · Esc 关闭"),
+                            .child(tr("viewer.op_hint")),
                     ),
             )
             // 标注排：标注工具 + 预设颜色（精简，自定义色走取色器）+ 提示。
@@ -1714,63 +1744,63 @@ impl Render for ImageViewer {
                     .child(self.mini_button(
                         cx,
                         "tool-select",
-                        "选择",
+                        tr("tool.select"),
                         ViewerAction::Tool(AnnoTool::Select),
                         self.tool == AnnoTool::Select,
                     ))
                     .child(self.mini_button(
                         cx,
                         "tool-rect",
-                        "矩形",
+                        tr("tool.rect"),
                         ViewerAction::Tool(AnnoTool::Rect),
                         self.tool == AnnoTool::Rect,
                     ))
                     .child(self.mini_button(
                         cx,
                         "tool-ellipse",
-                        "椭圆",
+                        tr("tool.ellipse"),
                         ViewerAction::Tool(AnnoTool::Ellipse),
                         self.tool == AnnoTool::Ellipse,
                     ))
                     .child(self.mini_button(
                         cx,
                         "tool-arrow",
-                        "箭头",
+                        tr("tool.arrow"),
                         ViewerAction::Tool(AnnoTool::Arrow),
                         self.tool == AnnoTool::Arrow,
                     ))
                     .child(self.mini_button(
                         cx,
                         "tool-pen",
-                        "画笔",
+                        tr("tool.pen"),
                         ViewerAction::Tool(AnnoTool::Pen),
                         self.tool == AnnoTool::Pen,
                     ))
                     .child(self.mini_button(
                         cx,
                         "tool-highlighter",
-                        "荧光笔",
+                        tr("tool.highlighter"),
                         ViewerAction::Tool(AnnoTool::Highlighter),
                         self.tool == AnnoTool::Highlighter,
                     ))
                     .child(self.mini_button(
                         cx,
                         "tool-eraser",
-                        "橡皮擦",
+                        tr("tool.eraser"),
                         ViewerAction::Tool(AnnoTool::Eraser),
                         self.tool == AnnoTool::Eraser,
                     ))
                     .child(self.mini_button(
                         cx,
                         "tool-mosaic",
-                        "马赛克",
+                        tr("tool.mosaic"),
                         ViewerAction::Tool(AnnoTool::Mosaic),
                         self.tool == AnnoTool::Mosaic,
                     ))
                     .child(self.mini_button(
                         cx,
                         "tool-text",
-                        "文字",
+                        tr("tool.text"),
                         ViewerAction::Tool(AnnoTool::Text),
                         self.tool == AnnoTool::Text,
                     ))
@@ -1784,7 +1814,7 @@ impl Render for ImageViewer {
                     .child(self.mini_button(
                         cx,
                         "color-picker",
-                        "取色",
+                        tr("tool.picker"),
                         ViewerAction::ToggleColorPicker,
                         self.show_color_picker,
                     ))
@@ -1817,32 +1847,32 @@ impl Render for ImageViewer {
                             div()
                                 .text_xs()
                                 .text_color(rgb(0x999999))
-                                .child("回车确认 · Esc 取消")
+                                .child(tr("viewer.text_confirm"))
                         } else if self.tool == AnnoTool::Text {
                             div()
                                 .text_xs()
                                 .text_color(rgb(0x999999))
-                                .child("点击新建 · Ctrl+拖动移动 · 点击已有文字编辑")
+                                .child(tr("viewer.text_new"))
                         } else if self.tool == AnnoTool::Select {
                             div()
                                 .text_xs()
                                 .text_color(rgb(0x999999))
-                                .child("拖动标注移动 · 空白处拖动画布")
+                                .child(tr("viewer.select_hint"))
                         } else if self.tool == AnnoTool::Eraser {
                             div()
                                 .text_xs()
                                 .text_color(rgb(0x999999))
-                                .child("点击 / 拖动删除命中的标注")
+                                .child(tr("viewer.eraser_hint"))
                         } else if self.tool == AnnoTool::Highlighter {
                             div()
                                 .text_xs()
                                 .text_color(rgb(0x999999))
-                                .child("拖动涂抹高亮（半透明粗线）")
+                                .child(tr("viewer.marker_hint"))
                         } else {
                             div()
                                 .text_xs()
                                 .text_color(rgb(0x999999))
-                                .child("选择工具后点击图片放置")
+                                .child(tr("viewer.place_hint"))
                         },
                     ),
             )
@@ -2122,7 +2152,7 @@ impl ImageViewer {
                         div()
                             .text_sm()
                             .text_color(rgb(0xFFFFFF))
-                            .child("有未保存的标注修改，关闭将丢失，是否先保存？"),
+                            .child(tr("confirm.title")),
                     )
                     .child(
                         div()
@@ -2131,21 +2161,21 @@ impl ImageViewer {
                             .child(self.mini_button(
                                 cx,
                                 "confirm-save-close",
-                                "保存并关闭",
+                                tr("confirm.save"),
                                 ViewerAction::ConfirmSaveClose,
                                 true,
                             ))
                             .child(self.mini_button(
                                 cx,
                                 "confirm-discard-close",
-                                "直接关闭",
+                                tr("confirm.discard"),
                                 ViewerAction::ConfirmDiscardClose,
                                 false,
                             ))
                             .child(self.mini_button(
                                 cx,
                                 "confirm-cancel-close",
-                                "取消",
+                                tr("confirm.cancel"),
                                 ViewerAction::CancelCloseConfirm,
                                 false,
                             )),
@@ -2156,15 +2186,17 @@ impl ImageViewer {
     /// 底部状态栏（复制 / 保存反馈 + 图片信息 + 已保存快捷入口）。
     fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // 右侧图片信息：尺寸 / 缩放 / 标注数，一目了然；有未保存修改时追加提醒。
-        let mut info = format!(
-            "{} × {} · {}% · {} 个标注",
-            self.preview.w,
-            self.preview.h,
-            (self.zoom * 100.0).round() as u32,
-            self.shapes.len()
+        let mut info = tr_fmt(
+            "viewer.info",
+            &[
+                ("w", &self.preview.w.to_string()),
+                ("h", &self.preview.h.to_string()),
+                ("zoom", &((self.zoom * 100.0).round() as u32).to_string()),
+                ("n", &self.shapes.len().to_string()),
+            ],
         );
         if self.dirty {
-            info.push_str(" · 未保存");
+            info.push_str(&tr("viewer.unsaved"));
         }
         let mut row = div()
             .flex()
@@ -2187,14 +2219,14 @@ impl ImageViewer {
                 .child(self.mini_button(
                     cx,
                     "open-saved-file",
-                    "打开文件",
+                    tr("viewer.open_file"),
                     ViewerAction::OpenSavedFile,
                     false,
                 ))
                 .child(self.mini_button(
                     cx,
                     "open-saved-dir",
-                    "打开目录",
+                    tr("viewer.open_dir"),
                     ViewerAction::OpenSavedDir,
                     false,
                 ));

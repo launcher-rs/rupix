@@ -15,6 +15,7 @@ use rgpui::{
 use crate::{
     app::RupixApp,
     capture::{CapturedFrame, cap_log},
+    i18n::{tr, tr_fmt},
 };
 
 /// 放大镜边长像素数（奇数，保证中心唯一）。
@@ -164,12 +165,13 @@ impl PickerView {
                 let hex = rgb_to_hex(r, g, b);
                 cx.write_to_clipboard(ClipboardItem::new_string(hex.clone()));
                 main.update(cx, |state, cx| {
-                    state.set_status(&format!("已复制颜色 {hex}"), cx);
+                    let msg = tr_fmt("picker.copied", &[("hex", &hex)]);
+                    state.set_status(&msg, cx);
                 });
             }
             None => {
                 main.update(cx, |state, cx| {
-                    state.set_status("取色失败：图片不可读", cx);
+                    state.set_status(&tr("picker.fail"), cx);
                 });
             }
         }
@@ -183,7 +185,7 @@ impl PickerView {
         let main = self.main.clone();
         main.update(cx, |state, cx| {
             state.capturing = false;
-            state.set_status("已取消取色", cx);
+            state.set_status(&tr("cap.cancelled"), cx);
         });
         window.remove_window();
         cx.refresh_windows();
@@ -232,8 +234,8 @@ impl Render for PickerView {
                 },
             ),
             None => (
-                "移动鼠标取色".to_string(),
-                "点击复制 · 右键 / Esc 取消".to_string(),
+                tr("picker.move_hint"),
+                tr("picker.click_hint"),
                 Rgba {
                     r: 0.0,
                     g: 0.0,

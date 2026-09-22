@@ -5,6 +5,8 @@
 
 use rgpui::{App, Keystroke, components::HotkeyValue};
 
+use crate::i18n::{tr, tr_fmt};
+
 /// 截图热键种类：区域、全屏、取色各一个系统级全局热键。
 ///（窗口吸附已合入区域截图，不再需要独立窗口热键；
 /// 老版本残留的 `rupix-hotkey-window.txt` 会被忽略，不删除用户文件。）
@@ -46,12 +48,12 @@ impl HotkeyKind {
         }
     }
 
-    /// 界面展示名。
-    pub fn label(self) -> &'static str {
+    /// 界面展示名（跟随当前语言）。
+    pub fn label(self) -> String {
         match self {
-            HotkeyKind::Region => "区域截图",
-            HotkeyKind::Full => "全屏截图",
-            HotkeyKind::Picker => "屏幕取色",
+            HotkeyKind::Region => tr("hotkey.region"),
+            HotkeyKind::Full => tr("hotkey.full"),
+            HotkeyKind::Picker => tr("hotkey.picker"),
         }
     }
 }
@@ -119,12 +121,25 @@ pub fn save_hotkey_string(kind: HotkeyKind, hotkey: &str) {
 pub fn apply_global_hotkey(cx: &mut App, kind: HotkeyKind, hotkey: &str) -> Result<(), String> {
     // Windows 的 RegisterHotKey 只支持部分按键（如 F1-F12、单字符、方向键等），
     // 先解析再注册，错误直接展示给用户。
-    let keystroke =
-        Keystroke::parse(hotkey).map_err(|error| format!("快捷键解析失败（{hotkey}）：{error}"))?;
+    let keystroke = Keystroke::parse(hotkey).map_err(|error| {
+        tr_fmt(
+            "hotkey.parse_fail",
+            &[("hotkey", hotkey), ("error", &error.to_string())],
+        )
+    })?;
     // 同一编号重复注册前必须先注销，否则系统会返回占用错误。
     cx.unregister_global_hotkey(kind.id());
     cx.register_global_hotkey(kind.id(), &keystroke)
-        .map_err(|error| format!("{}全局快捷键注册失败（{hotkey}）：{error}", kind.label()))
+        .map_err(|error| {
+            tr_fmt(
+                "hotkey.register_fail",
+                &[
+                    ("label", &kind.label()),
+                    ("hotkey", hotkey),
+                    ("error", &error.to_string()),
+                ],
+            )
+        })
 }
 
 /// 快捷键配置文件的完整路径。

@@ -19,6 +19,7 @@ use rgpui::{
 
 use crate::{
     app::{PreviewImage, RupixApp, autosave_screenshot},
+    i18n::{tr, tr_fmt},
     overlay::{PendingCapture, open_overlay},
     viewer::open_viewer,
 };
@@ -55,7 +56,7 @@ pub fn begin_capture(
         return;
     }
     state.capturing = true;
-    state.set_status("正在截取屏幕…", cx);
+    state.set_status(&tr("cap.capturing"), cx);
 
     // 浮层需要全屏尺寸：优先取主显示器边界，取不到则回退到居中默认尺寸。
     let display_bounds: Bounds<Pixels> = cx
@@ -93,7 +94,7 @@ pub fn begin_capture(
                                 w: img_w,
                                 h: img_h,
                             },
-                            "原图已自动保存",
+                            tr("cap.auto_saved"),
                         ),
                         None => (
                             PreviewImage {
@@ -101,15 +102,22 @@ pub fn begin_capture(
                                 w: img_w,
                                 h: img_h,
                             },
-                            "自动保存失败，仅预览",
+                            tr("cap.auto_fail"),
                         ),
                     };
-                    let msg = format!("已截取全屏 {img_w} × {img_h}（{auto_note}），见预览窗口");
+                    let msg = tr_fmt(
+                        "cap.full_done",
+                        &[
+                            ("w", &img_w.to_string()),
+                            ("h", &img_h.to_string()),
+                            ("note", &auto_note),
+                        ],
+                    );
                     state.set_status(&msg, cx);
                     open_viewer(cx.entity(), cx, preview);
                 } else {
                     // 区域截图：首帧只做裁剪来源，打开薄遮罩浮层框选。
-                    state.set_status("已截取，在遮罩上拖拽框选…", cx);
+                    state.set_status(&tr("cap.region_hint"), cx);
                     open_overlay(
                         cx.entity(),
                         cx,
@@ -141,7 +149,7 @@ pub fn begin_picker(state: &mut RupixApp, window: &mut Window, cx: &mut Context<
         return;
     }
     state.capturing = true;
-    state.set_status("正在取色…", cx);
+    state.set_status(&tr("cap.picking"), cx);
 
     // 取色浮层同样全屏显示冻结帧，尺寸取值与截图一致。
     let display_bounds: Bounds<Pixels> = cx
@@ -159,7 +167,7 @@ pub fn begin_picker(state: &mut RupixApp, window: &mut Window, cx: &mut Context<
         let updated = this
             .update(cx, |state, cx| {
                 state.capturing = false;
-                state.set_status("移动鼠标取色，点击复制，右键 / Esc 取消", cx);
+                state.set_status(&tr("cap.picker_hint"), cx);
                 crate::picker::open_picker(cx.entity(), cx, frame);
             })
             .is_ok();
@@ -184,7 +192,7 @@ async fn capture_first_frame(
         Err(_) => {
             let _ = this.update(cx, |state, cx| {
                 state.capturing = false;
-                state.set_status("未找到可捕获的屏幕源", cx);
+                state.set_status(&tr("cap.no_source"), cx);
             });
             return None;
         }
@@ -199,7 +207,7 @@ async fn capture_first_frame(
             ));
             let _ = this.update(cx, |state, cx| {
                 state.capturing = false;
-                state.set_status("未找到可捕获的屏幕源", cx);
+                state.set_status(&tr("cap.no_source"), cx);
             });
             return None;
         }
@@ -253,7 +261,7 @@ async fn capture_first_frame(
             cap_log("推流启动失败");
             let _ = this.update(cx, |state, cx| {
                 state.capturing = false;
-                state.set_status("启动屏幕捕获失败", cx);
+                state.set_status(&tr("cap.stream_fail"), cx);
             });
             return None;
         }
@@ -279,7 +287,7 @@ async fn capture_first_frame(
     if !frame_saved.load(Ordering::Relaxed) {
         let _ = this.update(cx, |state, cx| {
             state.capturing = false;
-            state.set_status("截取超时，请重试", cx);
+            state.set_status(&tr("cap.timeout"), cx);
         });
         return None;
     }

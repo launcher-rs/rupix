@@ -7,6 +7,7 @@ mod capture;
 #[allow(dead_code)]
 mod export;
 mod hotkey;
+mod i18n;
 mod overlay;
 mod picker;
 mod window;
@@ -32,9 +33,17 @@ actions!(inspector, [ToggleInspector]);
 
 /// 程序入口：组装主窗口、托盘、全局热键后进入事件循环。
 fn main() {
+    // 单例守卫：已有实例在跑（托盘常驻）则直接退出，避免热键冲突与重复托盘图标。
+    // 守卫必须存活整个进程期，故意泄漏持有到进程结束。
+    let Ok(_guard) = rgpui::SingleInstance::acquire("rupix") else {
+        return;
+    };
+    std::mem::forget(_guard);
     application().run(|cx: &mut App| {
         // 初始化主题与内置组件（HotkeyInput / Input 等依赖它）。
         rgpui::init_all(cx);
+        // 语言初始化必须在建窗前：窗口标题与状态文案都走词表。
+        i18n::init();
 
         // 启用默认 inspector 面板，F12 开关。
         // 与 rgpui 库侧保持同条件编译：release 默认无检查器代码、零成本。
@@ -64,7 +73,7 @@ fn main() {
                 rgpui::WindowOptions {
                     window_bounds: Some(rgpui::WindowBounds::Windowed(bounds)),
                     titlebar: Some(rgpui::TitlebarOptions {
-                        title: Some("Rupix 设置".into()),
+                        title: Some(i18n::tr("app.window_title").into()),
                         ..Default::default()
                     }),
                     // 设置窗口平时不需要显示：启动即隐藏到托盘，
@@ -113,9 +122,16 @@ fn main() {
             }
         }
         let boot_msg = if boot_errors.is_empty() {
-            format!("就绪：区域 {region_hotkey}，全屏 {full_hotkey}，取色 {picker_hotkey}（窗口已隐藏到托盘）")
+            i18n::tr_fmt(
+                "app.boot_ready",
+                &[
+                    ("region", &region_hotkey),
+                    ("full", &full_hotkey),
+                    ("picker", &picker_hotkey),
+                ],
+            )
         } else {
-            boot_errors.join("；")
+            boot_errors.join("; ")
         };
         main.update(cx, |view, cx| view.set_status(&boot_msg, cx));
         cx.on_global_hotkey(move |id, cx| {

@@ -5,7 +5,7 @@
 
 use rgpui::{App, AppContext, Entity, TrayIconEvent, TrayMenuItem, WindowHandle};
 
-use crate::{app::RupixApp, viewer::open_image_for_edit_in_app};
+use crate::{app::RupixApp, i18n::tr, viewer::open_image_for_edit_in_app};
 
 /// 托盘菜单项编号（与点击回调中的分支对应）。
 const MENU_REGION: &str = "capture_region";
@@ -29,34 +29,34 @@ const MENU_QUIT: &str = "quit";
 pub fn setup_tray(cx: &mut App, main_win: WindowHandle<RupixApp>, main: Entity<RupixApp>) {
     // 没有窗口也要保持运行，否则隐藏主窗口即退出进程。
     cx.set_keep_alive_without_windows(true);
-    cx.set_tray_tooltip("Rupix 拾景");
+    cx.set_tray_tooltip(&tr("tray.tooltip"));
     // 托盘图标：品牌蓝取景框 + 山形（`assets/tray.png`，PNG 字节由后端解码）。
     cx.set_tray_icon(Some(include_bytes!("../assets/tray.png")));
 
     cx.set_tray_menu(vec![
         TrayMenuItem::Action {
-            label: "区域截图".into(),
+            label: tr("tray.region").into(),
             id: MENU_REGION.into(),
         },
         TrayMenuItem::Action {
-            label: "全屏截图".into(),
+            label: tr("tray.full").into(),
             id: MENU_FULL.into(),
         },
         TrayMenuItem::Action {
-            label: "屏幕取色".into(),
+            label: tr("tray.picker").into(),
             id: MENU_PICKER.into(),
         },
         TrayMenuItem::Separator,
         TrayMenuItem::Action {
-            label: "打开图片编辑…".into(),
+            label: tr("tray.open_image").into(),
             id: MENU_OPEN_IMAGE.into(),
         },
         TrayMenuItem::Action {
-            label: "打开设置".into(),
+            label: tr("tray.show").into(),
             id: MENU_SHOW.into(),
         },
         TrayMenuItem::Action {
-            label: "退出".into(),
+            label: tr("tray.quit").into(),
             id: MENU_QUIT.into(),
         },
     ]);

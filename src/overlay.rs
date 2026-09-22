@@ -17,6 +17,7 @@ use rgpui::{
 use crate::{
     app::{PreviewImage, RupixApp, autosave_screenshot},
     capture::cap_log,
+    i18n::{tr, tr_fmt},
     viewer::open_viewer,
 };
 
@@ -260,11 +261,18 @@ impl SelectView {
                             w: preview.w,
                             h: preview.h,
                         },
-                        "原图已自动保存",
+                        tr("cap.auto_saved"),
                     ),
-                    None => (preview, "自动保存失败，仅预览"),
+                    None => (preview, tr("cap.auto_fail")),
                 };
-                let msg = format!("已截取 {cw} × {ch}（{auto_note}），见预览窗口");
+                let msg = tr_fmt(
+                    "cap.cropped",
+                    &[
+                        ("w", &cw.to_string()),
+                        ("h", &ch.to_string()),
+                        ("note", &auto_note),
+                    ],
+                );
                 main.update(cx, |state, cx| {
                     state.capturing = false;
                     state.set_status(&msg, cx);
@@ -273,9 +281,10 @@ impl SelectView {
                 open_viewer(main, cx, preview);
             }
             Err(error) => {
+                let msg = tr_fmt("cap.crop_fail", &[("error", &error)]);
                 main.update(cx, |state, cx| {
                     state.capturing = false;
-                    state.set_status(&format!("裁剪失败：{error}"), cx);
+                    state.set_status(&msg, cx);
                 });
             }
         }
@@ -290,7 +299,7 @@ impl SelectView {
         let main = self.main.clone();
         main.update(cx, |state, cx| {
             state.capturing = false;
-            state.set_status("已取消", cx);
+            state.set_status(&tr("cap.cancelled"), cx);
         });
         window.remove_window();
         // 同 finish：保证主窗口重画，不残留“截取中”灰按钮。
@@ -360,10 +369,13 @@ impl Render for SelectView {
                 (Some((x, y, w, h)), Some(badge))
             }
             (None, Some(((x, y, w, h), title))) => {
-                let text = format!(
-                    "{title}  {} × {} · 点击截取",
-                    (w * sx).round() as u32,
-                    (h * sy).round() as u32
+                let text = tr_fmt(
+                    "overlay.badge_click",
+                    &[
+                        ("title", title),
+                        ("w", &((w * sx).round() as u32).to_string()),
+                        ("h", &((h * sy).round() as u32).to_string()),
+                    ],
                 );
                 (Some((*x, *y, *w, *h)), Some(text))
             }
@@ -435,7 +447,7 @@ impl Render for SelectView {
                     .bg(rgb(0x000000))
                     .text_color(rgb(0xFFFFFF))
                     .text_xs()
-                    .child("拖拽选区 / 点击窗口截取；右键 / Esc 取消"),
+                    .child(tr("overlay.hint")),
             );
 
         match show {

@@ -9,7 +9,10 @@ use std::{io::Cursor, path::Path};
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont as _, point};
 use image::{DynamicImage, ImageFormat as ImgFormat, Rgba, RgbaImage};
 
-use crate::shapes::{AnnoColor, PixelRect, Shape};
+use crate::{
+    i18n::{tr, tr_fmt},
+    shapes::{AnnoColor, PixelRect, Shape},
+};
 
 /// 文字导出时的默认字号（图片像素）。
 pub const DEFAULT_TEXT_SIZE: f32 = 22.0;
@@ -145,14 +148,14 @@ pub fn copy_image_and_file_to_clipboard(png: &[u8], path: &Path) -> Result<(), S
     };
 
     if png.is_empty() {
-        return Err("图片数据为空".to_string());
+        return Err(tr("export.empty_image"));
     }
     if !path.is_file() {
-        return Err("剪贴板文件不存在".to_string());
+        return Err(tr("export.no_clip_file"));
     }
     // DIB 可选：生成失败仍可继续（PNG 格式多数程序也认），HDROP 必须成功。
     let dib = png_to_dib_bytes(png);
-    let hdrop = hdrop_bytes(path).ok_or_else(|| "拼接文件剪贴板数据失败".to_string())?;
+    let hdrop = hdrop_bytes(path).ok_or_else(|| tr("export.hdrop_fail"))?;
 
     // 往剪贴板写一段字节（内存所有权成功后移交系统，失败才释放）。
     fn set_bytes(data: &[u8], format: u32) -> Result<(), String> {
@@ -164,19 +167,19 @@ pub fn copy_image_and_file_to_clipboard(png: &[u8], path: &Path) -> Result<(), S
             },
         };
         if data.is_empty() {
-            return Err("剪贴板数据为空".to_string());
+            return Err(tr("export.empty_clip"));
         }
         unsafe {
             let global = GlobalAlloc(GMEM_MOVEABLE, data.len())
-                .map_err(|e| format!("分配剪贴板内存失败：{e:?}"))?;
+                .map_err(|e| tr_fmt("export.alloc_fail", &[("e", &format!("{e:?}"))]))?;
             let ptr = GlobalLock(global);
             if ptr.is_null() {
-                return Err("锁定剪贴板内存失败".to_string());
+                return Err(tr("export.lock_fail"));
             }
             std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
             let _ = GlobalUnlock(global);
             SetClipboardData(format, Some(HANDLE(global.0)))
-                .map_err(|e| format!("写入剪贴板失败：{e:?}"))?;
+                .map_err(|e| tr_fmt("export.write_fail", &[("e", &format!("{e:?}"))]))?;
             // HGLOBAL 是纯句柄（Copy 类型，无 RAII）：成功后内存归系统所有，
             // 此处不再释放，函数返回即完成所有权移交。
             Ok(())
@@ -193,15 +196,17 @@ pub fn copy_image_and_file_to_clipboard(png: &[u8], path: &Path) -> Result<(), S
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     if !opened {
-        return Err("打开系统剪贴板失败".to_string());
+        return Err(tr("export.open_fail"));
     }
     // 无论成功失败都要关闭剪贴板，用闭包包裹保证 CloseClipboard 一定执行。
     let result = (|| {
-        unsafe { EmptyClipboard().map_err(|e| format!("清空剪贴板失败：{e:?}")) }?;
+        unsafe {
+            EmptyClipboard().map_err(|e| tr_fmt("export.empty_fail", &[("e", &format!("{e:?}"))]))
+        }?;
         // 注册的 `PNG` 格式：Word / 浏览器认它，比 DIB 保真。
         let png_format = unsafe { RegisterClipboardFormatW(windows::core::w!("PNG")) };
         if png_format == 0 {
-            return Err("注册 PNG 剪贴板格式失败".to_string());
+            return Err(tr("export.reg_fail"));
         }
         set_bytes(png, png_format)?;
         // DIB：画图等旧程序认它，失败不阻断（PNG 已写入）。
@@ -219,7 +224,7 @@ pub fn copy_image_and_file_to_clipboard(png: &[u8], path: &Path) -> Result<(), S
 /// 把 PNG 图片与图片文件同时写入剪贴板，非 Windows 平台暂时回退为不支持。
 #[cfg(not(target_os = "windows"))]
 pub fn copy_image_and_file_to_clipboard(_png: &[u8], _path: &Path) -> Result<(), String> {
-    Err("当前平台暂不支持复制为文件".to_string())
+    Err(tr("export.unsupported"))
 }
 
 /// 把图片文件作为“文件项”写入系统剪贴板，便于在资源管理器目录中直接粘贴。
@@ -229,7 +234,7 @@ pub fn copy_image_and_file_to_clipboard(_png: &[u8], _path: &Path) -> Result<(),
 #[cfg(target_os = "windows")]
 pub fn copy_file_to_clipboard(path: &Path) -> Result<(), String> {
     if !path.is_file() {
-        return Err("剪贴板文件不存在".to_string());
+        return Err(tr("export.no_clip_file"));
     }
 
     // Windows 资源管理器需要 CF_HDROP 文件列表；PowerShell 的 Set-Clipboard -LiteralPath
@@ -245,14 +250,14 @@ pub fn copy_file_to_clipboard(path: &Path) -> Result<(), String> {
         ])
         .arg(path.as_os_str())
         .output()
-        .map_err(|err| format!("调用系统剪贴板失败：{err}"))?;
+        .map_err(|err| tr_fmt("export.sys_fail", &[("err", &err.to_string())]))?;
 
     if output.status.success() {
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if stderr.is_empty() {
-            Err("写入文件剪贴板失败".to_string())
+            Err(tr("export.file_fail"))
         } else {
             Err(stderr)
         }
@@ -265,7 +270,7 @@ pub fn copy_file_to_clipboard(path: &Path) -> Result<(), String> {
 /// - `path`: 已存在的 PNG 文件路径。
 #[cfg(not(target_os = "windows"))]
 pub fn copy_file_to_clipboard(_path: &Path) -> Result<(), String> {
-    Err("当前平台暂不支持复制为文件".to_string())
+    Err(tr("export.unsupported"))
 }
 
 /// 加载系统字体（供文字烧录），按常见 Windows 中文字体依次尝试。

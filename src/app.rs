@@ -8,6 +8,7 @@
 use crate::{
     capture::{begin_capture, begin_picker},
     hotkey::{HotkeyKind, apply_global_hotkey, hotkey_value_to_string, save_hotkey_string},
+    i18n::{available_langs, lang, set_lang, tr, tr_fmt},
     viewer::{open_viewer, preview_from_path},
 };
 use rgpui::{
@@ -15,7 +16,7 @@ use rgpui::{
     components::{HotkeyInput, HotkeyInputState, HotkeyValue},
     div,
     prelude::*,
-    rgb,
+    px, rgb,
 };
 use std::path::PathBuf;
 
@@ -117,6 +118,75 @@ pub struct PreviewImage {
     pub h: u32,
 }
 
+/// 设置页 Tab：截图（入口）、快捷键（录制）、保存（目录+最近）、通用（语言）。
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum SettingsTab {
+    /// 截图：截图入口按钮。
+    #[default]
+    Capture,
+    /// 快捷键：三种热键录制卡。
+    Hotkey,
+    /// 保存：默认目录与最近保存。
+    Save,
+    /// 通用：界面语言。
+    General,
+}
+
+impl SettingsTab {
+    /// Tab 唯一标识（选中态比对用）。
+    fn id(self) -> &'static str {
+        match self {
+            SettingsTab::Capture => "capture",
+            SettingsTab::Hotkey => "hotkey",
+            SettingsTab::Save => "save",
+            SettingsTab::General => "general",
+        }
+    }
+
+    /// Tab 显示文案（跟随当前语言）。
+    fn label(self) -> String {
+        match self {
+            SettingsTab::Capture => tr("tab.capture"),
+            SettingsTab::Hotkey => tr("tab.hotkey"),
+            SettingsTab::Save => tr("tab.save"),
+            SettingsTab::General => tr("tab.general"),
+        }
+    }
+
+    /// 从点击 id 还原（未知 id 回退截图页）。
+    fn from_id(id: &str) -> Self {
+        match id {
+            "hotkey" => SettingsTab::Hotkey,
+            "save" => SettingsTab::Save,
+            "general" => SettingsTab::General,
+            _ => SettingsTab::Capture,
+        }
+    }
+
+    /// 全部 Tab（左侧竖排栏顺序）。
+    fn all() -> [SettingsTab; 4] {
+        [
+            SettingsTab::Capture,
+            SettingsTab::Hotkey,
+            SettingsTab::Save,
+            SettingsTab::General,
+        ]
+    }
+}
+
+/// 截图入口动作（设置页截图 Tab 的四个按钮共用分发）。
+#[derive(Clone, Copy)]
+enum EntryAction {
+    /// 区域截图。
+    Region,
+    /// 全屏截图。
+    Full,
+    /// 屏幕取色。
+    Picker,
+    /// 打开本地图片编辑。
+    OpenImage,
+}
+
 /// 主视图状态。
 pub struct RupixApp {
     /// 是否正在截取中（防止重复推流）。
@@ -135,6 +205,8 @@ pub struct RupixApp {
     picker_input: Entity<HotkeyInputState>,
     /// 状态栏文本。
     status: SharedString,
+    /// 设置页当前 Tab（截图 / 保存 / 通用）。
+    settings_tab: SettingsTab,
     /// 截图默认保存目录（截图后自动存原图到此，设置页可改）。
     save_dir: PathBuf,
     /// 最近保存的文件（路径 + 提示语，最多保留 10 条）。
@@ -166,6 +238,7 @@ impl RupixApp {
             full_hotkey,
             picker_hotkey,
             status: SharedString::from("就绪"),
+            settings_tab: SettingsTab::default(),
             save_dir: load_save_dir(),
             recents: Vec::new(),
         }
@@ -224,7 +297,7 @@ impl RupixApp {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("选择要编辑的图片".into()),
+            prompt: Some(tr("image.pick_prompt").into()),
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else {
@@ -236,7 +309,7 @@ impl RupixApp {
             let Some(preview) = preview_from_path(&path) else {
                 // 非图片文件：回写设置窗口状态提示。
                 let _ = this.update(cx, |state, cx| {
-                    state.set_status("所选文件不是有效图片", cx);
+                    state.set_status(&tr("image.invalid"), cx);
                 });
                 return;
             };
@@ -254,7 +327,7 @@ impl RupixApp {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("选择截图默认保存目录".into()),
+            prompt: Some(tr("savedir.prompt").into()),
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else {
@@ -266,14 +339,15 @@ impl RupixApp {
             // 只要真实存在的目录，无效选择不更改当前配置。
             if !dir.is_dir() {
                 let _ = this.update(cx, |state, cx| {
-                    state.set_status("所选目录无效，未更改保存路径", cx);
+                    state.set_status(&tr("savedir.invalid"), cx);
                 });
                 return;
             }
             store_save_dir(&dir);
             let _ = this.update(cx, |state, cx| {
                 state.save_dir = dir.clone();
-                state.set_status(&format!("默认保存目录已更新：{}", dir.display()), cx);
+                let msg = tr_fmt("savedir.updated", &[("dir", &dir.display().to_string())]);
+                state.set_status(&msg, cx);
             });
         })
         .detach();
@@ -284,7 +358,8 @@ impl RupixApp {
         let dir = default_save_dir();
         store_save_dir(&dir);
         self.save_dir = dir.clone();
-        self.set_status(&format!("已恢复默认保存目录：{}", dir.display()), cx);
+        let msg = tr_fmt("savedir.restored", &[("dir", &dir.display().to_string())]);
+        self.set_status(&msg, cx);
     }
 
     /// 快捷键录制框变化时自动应用新的全局热键（区域 / 全屏各自独立）。
@@ -296,7 +371,7 @@ impl RupixApp {
     ) {
         let Some(value) = value else {
             // 清空录制：保持旧热键生效，仅提示。
-            self.set_status("已清空录制，旧快捷键继续生效", cx);
+            self.set_status(&tr("hotkey.cleared"), cx);
             return;
         };
         let text = hotkey_value_to_string(&value);
@@ -308,7 +383,11 @@ impl RupixApp {
                     HotkeyKind::Picker => self.picker_hotkey = text.clone(),
                 }
                 save_hotkey_string(kind, &text);
-                self.set_status(&format!("{}全局截图快捷键：{text}", kind.label()), cx);
+                let msg = tr_fmt(
+                    "hotkey.applied",
+                    &[("label", &kind.label()), ("text", &text)],
+                );
+                self.set_status(&msg, cx);
             }
             Err(error) => {
                 self.set_status(&error, cx);
@@ -316,7 +395,7 @@ impl RupixApp {
         }
     }
 
-    /// 单个热键录制卡片（区域 / 全屏各一张，录制后自动应用）。
+    /// 单个热键录制卡片（每种截图一张，录制后自动应用）。
     fn hotkey_card(
         &self,
         cx: &mut Context<Self>,
@@ -326,6 +405,8 @@ impl RupixApp {
     ) -> impl IntoElement {
         // kind 可复制，进闭包后按种类回写对应状态。
         let view = cx.entity();
+        let title = tr_fmt("hotkey.card_title", &[("label", &kind.label())]);
+        let current_text = tr_fmt("hotkey.current", &[("current", current)]);
         div()
             .flex()
             .flex_col()
@@ -333,14 +414,11 @@ impl RupixApp {
             .p_3()
             .rounded_md()
             .bg(rgb(0xFFFFFF))
-            .child(div().text_sm().child(format!(
-                "{}全局热键（点击框，按下组合键即自动生效）",
-                kind.label()
-            )))
+            .child(div().text_sm().child(title))
             .child(
                 HotkeyInput::new(input)
-                    .placeholder("点这里，然后按下快捷键")
-                    .recording_text("正在录制…")
+                    .placeholder(tr("hotkey.placeholder"))
+                    .recording_text(tr("hotkey.recording"))
                     .on_change(move |value, _, cx| {
                         view.update(cx, |this, cx| this.on_hotkey_recorded(kind, value, cx));
                     }),
@@ -349,231 +427,356 @@ impl RupixApp {
                 div()
                     .text_xs()
                     .text_color(rgb(0x888888))
-                    .child(format!("当前：{current}（失焦可用，托盘常驻）")),
+                    .child(current_text),
             )
+    }
+
+    /// 截图入口按钮（截图 Tab，截取中整行置灰，颜色区分种类）。
+    fn entry_button(
+        &self,
+        cx: &mut Context<Self>,
+        id: &'static str,
+        label: String,
+        color: u32,
+        action: EntryAction,
+    ) -> impl IntoElement {
+        let view = cx.entity();
+        let capturing = self.capturing;
+        div()
+            .id(id)
+            .w_full()
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .text_sm()
+            .text_center()
+            .cursor_pointer()
+            .bg(if capturing { rgb(0xC0C0C0) } else { rgb(color) })
+            .text_color(rgb(0xFFFFFF))
+            .child(label)
+            .on_click(move |_, window, cx| {
+                view.update(cx, |this, cx| match action {
+                    EntryAction::Region => this.begin_region(window, cx),
+                    EntryAction::Full => this.begin_full(window, cx),
+                    EntryAction::Picker => this.begin_picker(window, cx),
+                    EntryAction::OpenImage => this.open_image_for_edit(window, cx),
+                });
+            })
+    }
+
+    /// 截图 Tab：截图入口按钮（一行一个，固定 200px 宽） + 使用提示。
+    fn capture_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().w(px(200.)).child(self.entry_button(
+                cx,
+                "rupix-btn-region",
+                tr("btn.region"),
+                0x1E90FF,
+                EntryAction::Region,
+            )))
+            .child(div().w(px(200.)).child(self.entry_button(
+                cx,
+                "rupix-btn-full",
+                tr("btn.full"),
+                0x107C10,
+                EntryAction::Full,
+            )))
+            .child(div().w(px(200.)).child(self.entry_button(
+                cx,
+                "rupix-btn-picker",
+                tr("btn.picker"),
+                0xFF8C00,
+                EntryAction::Picker,
+            )))
+            .child(div().w(px(200.)).child(self.entry_button(
+                cx,
+                "rupix-btn-open-image",
+                tr("btn.open_image"),
+                0x6A5ACD,
+                EntryAction::OpenImage,
+            )))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x888888))
+                    .child(tr("app.tips")),
+            )
+    }
+
+    /// 快捷键 Tab：三种热键录制卡。
+    fn hotkey_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(self.hotkey_card(
+                cx,
+                HotkeyKind::Region,
+                self.region_input.clone(),
+                &self.region_hotkey.clone(),
+            ))
+            .child(self.hotkey_card(
+                cx,
+                HotkeyKind::Full,
+                self.full_input.clone(),
+                &self.full_hotkey.clone(),
+            ))
+            .child(self.hotkey_card(
+                cx,
+                HotkeyKind::Picker,
+                self.picker_input.clone(),
+                &self.picker_hotkey.clone(),
+            ))
+    }
+
+    /// 保存 Tab：默认目录卡 + 最近保存。
+    fn save_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        let save_dir = self.save_dir.clone();
+        let recents = self.recents.clone();
+        let mut tab = div().flex().flex_col().gap_3().child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_3()
+                .rounded_md()
+                .bg(rgb(0xFFFFFF))
+                .child(div().text_sm().child(tr("savedir.title")))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0x555555))
+                        .child(save_dir.display().to_string()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child({
+                            let v = view.clone();
+                            div()
+                                .id("rupix-btn-save-dir")
+                                .px_3()
+                                .py_1()
+                                .rounded_md()
+                                .text_sm()
+                                .cursor_pointer()
+                                .bg(rgb(0x1E90FF))
+                                .text_color(rgb(0xFFFFFF))
+                                .child(tr("savedir.pick"))
+                                .on_click(move |_, _, cx| {
+                                    v.update(cx, |this, cx| this.pick_save_dir(cx));
+                                })
+                        })
+                        .child({
+                            let v = view.clone();
+                            div()
+                                .id("rupix-btn-save-dir-reset")
+                                .px_3()
+                                .py_1()
+                                .rounded_md()
+                                .text_sm()
+                                .cursor_pointer()
+                                .bg(rgb(0x888888))
+                                .text_color(rgb(0xFFFFFF))
+                                .child(tr("savedir.reset"))
+                                .on_click(move |_, _, cx| {
+                                    v.update(cx, |this, cx| this.reset_save_dir(cx));
+                                })
+                        }),
+                ),
+        );
+        // 最近保存：点击用系统默认程序打开。
+        if !recents.is_empty() {
+            tab = tab.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(div().text_sm().child(tr("app.recents")))
+                    .children(recents.into_iter().enumerate().map(|(i, (path, msg))| {
+                        let name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("?")
+                            .to_string();
+                        div()
+                            .id(format!("rupix-recent-{i}"))
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_xs()
+                            .cursor_pointer()
+                            .bg(rgb(0xFFFFFF))
+                            .text_color(rgb(0x1E90FF))
+                            .child(format!("{name}  {msg}"))
+                            .on_click(move |_, _, cx| {
+                                cx.open_with_system(&path);
+                            })
+                    })),
+            );
+        }
+        tab
+    }
+
+    /// 通用 Tab：界面语言卡。
+    fn general_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        let current = lang();
+        div().flex().flex_col().gap_3().child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_3()
+                .rounded_md()
+                .bg(rgb(0xFFFFFF))
+                .child(div().text_sm().child(tr("lang.title")))
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .children(available_langs().into_iter().map(|item| {
+                            let v = view.clone();
+                            let selected = item == current;
+                            let code = item.code();
+                            let name = item.display_name();
+                            div()
+                                .id(format!("rupix-lang-{code}"))
+                                .px_3()
+                                .py_1()
+                                .rounded_md()
+                                .text_sm()
+                                .cursor_pointer()
+                                .bg(if selected {
+                                    rgb(0x1E90FF)
+                                } else {
+                                    rgb(0xEEEEEE)
+                                })
+                                .text_color(if selected {
+                                    rgb(0xFFFFFF)
+                                } else {
+                                    rgb(0x333333)
+                                })
+                                .child(name.clone())
+                                .on_click(move |_, _, cx| {
+                                    set_lang(&code);
+                                    v.update(cx, |this, cx| {
+                                        let msg = tr_fmt("lang.switched", &[("lang", &name)]);
+                                        this.set_status(&msg, cx);
+                                    });
+                                })
+                        })),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0x888888))
+                        .child(tr("lang.note")),
+                ),
+        )
     }
 }
 
 impl Render for RupixApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
-        let region_hotkey = self.region_hotkey.clone();
-        let full_hotkey = self.full_hotkey.clone();
-        let picker_hotkey = self.picker_hotkey.clone();
-        let region_input = self.region_input.clone();
-        let full_input = self.full_input.clone();
-        let picker_input = self.picker_input.clone();
+        let tab = self.settings_tab;
         let status = self.status.clone();
-        let save_dir = self.save_dir.clone();
-        let capturing = self.capturing;
-        let recents = self.recents.clone();
 
         div()
             .size_full()
             .flex()
-            .flex_col()
-            .gap_3()
-            .p_4()
             .bg(rgb(0xF7F7F7))
             .text_color(rgb(0x333333))
-            // 标题（设置窗口：平时隐藏到托盘）。
-            .child(
-                div()
-                    .flex()
-                    .items_baseline()
-                    .gap_2()
-                    .child(div().text_xl().child("Rupix · 拾景 设置"))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x888888))
-                            .child("关闭即隐藏到托盘 · 日常凭快捷键截图即可"),
-                    ),
-            )
-            // 快捷键设置：区域 / 全屏 / 取色各一张录制卡（录制后自动应用）。
-            .child(self.hotkey_card(cx, HotkeyKind::Region, region_input, &region_hotkey))
-            .child(self.hotkey_card(cx, HotkeyKind::Full, full_input, &full_hotkey))
-            .child(self.hotkey_card(cx, HotkeyKind::Picker, picker_input, &picker_hotkey))
-            // 默认保存路径：截图后自动存一份原图到此，标注后点保存会另存新文件。
+            // 左侧竖排 Tab 栏（固定宽不收缩）。
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap_2()
+                    .gap_1()
+                    .w(px(118.))
+                    .flex_shrink_0()
                     .p_3()
-                    .rounded_md()
                     .bg(rgb(0xFFFFFF))
-                    .child(div().text_sm().child("默认保存路径（截图自动保存原图到此）"))
-                    .child(
+                    .children(SettingsTab::all().into_iter().map(|item| {
+                        let v = view.clone();
+                        let selected = item == tab;
                         div()
-                            .text_xs()
-                            .text_color(rgb(0x555555))
-                            .child(save_dir.display().to_string()),
-                    )
+                            .id(format!("rupix-tab-{}", item.id()))
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .text_sm()
+                            .cursor_pointer()
+                            .bg(if selected {
+                                rgb(0x1E90FF)
+                            } else {
+                                rgb(0xFFFFFF)
+                            })
+                            .text_color(if selected {
+                                rgb(0xFFFFFF)
+                            } else {
+                                rgb(0x333333)
+                            })
+                            .hover(|style| {
+                                style.bg(if selected {
+                                    rgb(0x1E90FF)
+                                } else {
+                                    rgb(0xEEEEEE)
+                                })
+                            })
+                            .child(item.label())
+                            .on_click(move |_, _, cx| {
+                                v.update(cx, |this, cx| {
+                                    this.settings_tab = SettingsTab::from_id(item.id());
+                                    cx.notify();
+                                });
+                            })
+                    })),
+            )
+            // 右侧：标题 + 内容 + 状态栏（min_w(0) 允许收缩，长文本换行不撑宽）。
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .p_4()
+                    // 标题（设置窗口：平时隐藏到托盘）。
                     .child(
                         div()
                             .flex()
+                            .items_baseline()
                             .gap_2()
-                            .child({
-                                let v = view.clone();
+                            .child(div().text_xl().child(tr("app.title")))
+                            .child(
                                 div()
-                                    .id("rupix-btn-save-dir")
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_md()
-                                    .text_sm()
-                                    .cursor_pointer()
-                                    .bg(rgb(0x1E90FF))
-                                    .text_color(rgb(0xFFFFFF))
-                                    .child("选择目录…")
-                                    .on_click(move |_, _, cx| {
-                                        v.update(cx, |this, cx| this.pick_save_dir(cx));
-                                    })
-                            })
-                            .child({
-                                let v = view.clone();
-                                div()
-                                    .id("rupix-btn-save-dir-reset")
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_md()
-                                    .text_sm()
-                                    .cursor_pointer()
-                                    .bg(rgb(0x888888))
-                                    .text_color(rgb(0xFFFFFF))
-                                    .child("恢复默认")
-                                    .on_click(move |_, _, cx| {
-                                        v.update(cx, |this, cx| this.reset_save_dir(cx));
-                                    })
-                            }),
+                                    .text_xs()
+                                    .text_color(rgb(0x888888))
+                                    .child(tr("app.subtitle")),
+                            ),
+                    )
+                    // Tab 内容区。
+                    .child(match tab {
+                        SettingsTab::Capture => self.capture_tab(cx).into_any_element(),
+                        SettingsTab::Hotkey => self.hotkey_tab(cx).into_any_element(),
+                        SettingsTab::Save => self.save_tab(cx).into_any_element(),
+                        SettingsTab::General => self.general_tab(cx).into_any_element(),
+                    })
+                    // 状态栏（常驻底部，各 Tab 操作反馈统一落这里）。
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(0x555555))
+                            .child(tr_fmt("app.status", &[("status", &status)])),
                     ),
             )
-            // 截图入口。
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child({
-                        let v = view.clone();
-                        div()
-                            .id("rupix-btn-region")
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .bg(if capturing {
-                                rgb(0xC0C0C0)
-                            } else {
-                                rgb(0x1E90FF)
-                            })
-                            .text_color(rgb(0xFFFFFF))
-                            .child("区域截图")
-                            .on_click(move |_, window, cx| {
-                                v.update(cx, |this, cx| this.begin_region(window, cx));
-                            })
-                    })
-                    .child({
-                        let v = view.clone();
-                        div()
-                            .id("rupix-btn-full")
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .bg(if capturing {
-                                rgb(0xC0C0C0)
-                            } else {
-                                rgb(0x107C10)
-                            })
-                            .text_color(rgb(0xFFFFFF))
-                            .child("全屏截图")
-                            .on_click(move |_, window, cx| {
-                                v.update(cx, |this, cx| this.begin_full(window, cx));
-                            })
-                    })
-                    .child({
-                        let v = view.clone();
-                        div()
-                            .id("rupix-btn-picker")
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .bg(if capturing {
-                                rgb(0xC0C0C0)
-                            } else {
-                                rgb(0xFF8C00)
-                            })
-                            .text_color(rgb(0xFFFFFF))
-                            .child("屏幕取色")
-                            .on_click(move |_, window, cx| {
-                                v.update(cx, |this, cx| this.begin_picker(window, cx));
-                            })
-                    })
-                    .child({
-                        let v = view.clone();
-                        div()
-                            .id("rupix-btn-open-image")
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .bg(if capturing {
-                                rgb(0xC0C0C0)
-                            } else {
-                                rgb(0x6A5ACD)
-                            })
-                            .text_color(rgb(0xFFFFFF))
-                            .child("打开图片编辑…")
-                            .on_click(move |_, window, cx| {
-                                v.update(cx, |this, cx| this.open_image_for_edit(window, cx));
-                            })
-                    }),
-            )
-            // 使用提示（设置窗口平时隐藏，截图走快捷键 / 托盘）。
-            .child(div().text_xs().text_color(rgb(0x888888)).child(
-                "区域截图：在全屏遮罩上拖拽框选（悬停窗口高亮时点击直接截该窗口），松手后进独立预览窗口（可缩放/复制/保存，可底部状态栏查看结果），右键/Esc 取消。取色：在冻结帧上移动取色，点击复制 HEX。本窗口关闭即隐藏到托盘。",
-            ))
-            // 状态栏。
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(0x555555))
-                    .child(format!("状态：{status}")),
-            )
-            // 最近保存：点击用系统默认程序打开。
-            .when(!recents.is_empty(), |el| {
-                el.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(div().text_sm().child("最近保存（点击打开）"))
-                        .children(recents.into_iter().enumerate().map(|(i, (path, msg))| {
-                            let name = path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("?")
-                                .to_string();
-                            div()
-                                .id(format!("rupix-recent-{i}"))
-                                .px_2()
-                                .py_1()
-                                .rounded_md()
-                                .text_xs()
-                                .cursor_pointer()
-                                .bg(rgb(0xFFFFFF))
-                                .text_color(rgb(0x1E90FF))
-                                .child(format!("{name}  {msg}"))
-                                .on_click(move |_, _, cx| {
-                                    cx.open_with_system(&path);
-                                })
-                        })),
-                )
-            })
     }
 }
