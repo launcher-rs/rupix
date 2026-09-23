@@ -599,6 +599,18 @@ fn in_clip(x: i32, y: i32, clip: &PixelRect) -> bool {
         && y < (clip.y + clip.h) as i32
 }
 
+/// 量一行文本在指定字号下的 advance 总宽（OCR 原位 overlay 按框宽拟合字号用）。
+///
+/// 与下方 `draw_text` 同一套度量（同 scale 下的 `h_advance` 求和），保证量出来即画出来。
+pub fn measure_text_width(font: &FontVec, content: &str, size: f32) -> f32 {
+    let scale = PxScale::from(size.max(8.0));
+    let scaled = font.as_scaled(scale);
+    content
+        .chars()
+        .map(|ch| scaled.h_advance(scaled.glyph_id(ch)))
+        .sum()
+}
+
 /// 单行文字绘制：逐字形取位图拼排（中文按字推进，无复杂塑形，截图标注够用）。
 // 参数多为烧录必需（位置 / 内容 / 颜色 / 字号 / 底色缺一不可），此处允许超限。
 #[allow(clippy::too_many_arguments)]

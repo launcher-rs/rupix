@@ -22,6 +22,11 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 # 字形光栅化：把文字标注烧录进导出图片（系统字体文件加载）。
 ab_glyph = "0.2"
+# 通用错误类型（库逻辑与 example 共用）。
+anyhow = "1"
+# OCR spike：PaddleOCR 系 Rust 实现（MNN 推理），中英文识别。
+# 模型（三件套约 21MB）放 git 忽略的 temp/ocr-models，见 examples/ocr_spike.rs。
+ocr-rs = "2.4"
 
 [features]
 # 调试面板透传：debug 构建默认启用检查器（F12）；

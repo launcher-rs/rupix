@@ -67,6 +67,7 @@ rupix/
 │   ├── shapes.rs        矢量标注模型
 │   ├── hotkey.rs        全局热键注册与持久化
 │   ├── cli.rs           命令行截图（全屏 / 区域直存 PNG，不进图形界面）
+│   ├── ocr.rs           离线 OCR（PP-OCRv5 mobile，识别底图并落成文字标注）
 │   └── tray.rs          托盘常驻与菜单
 ├── Cargo.toml           包配置与依赖（含 release 优化）
 ├── README.md            项目说明（本文件）
@@ -93,6 +94,10 @@ cargo fmt --check
 cargo clippy -- -D warnings
 cargo test
 ```
+
+> OCR 构建前提：本机需安装 LLVM（bindgen 要用 libclang）。
+> MSVC 头文件解析参数已由 `.cargo/config.toml` 自动带上，无需手动配环境变量；
+> 若 LLVM 不在默认路径，再另行设置 `LIBCLANG_PATH` 指向其 `bin` 目录（改完重开终端）。
 
 ## 命令行截图
 

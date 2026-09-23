@@ -1,0 +1,7 @@
+# OCR 依赖（ocr-rs → bindgen）用 clang 解析 MSVC 头文件时的固定参数。
+# 不带它 bindgen 会报 vcruntime.h 解析错误，Windows 上构建必挂。
+# 变量名自带 target 后缀，其他平台构建时不会被读取，故可无条件设置；
+# 已存在的同名进程环境变量优先（force 默认 false），本机特殊 LLVM 可自行覆盖。
+# 注意：本机仍需安装 LLVM（README 快速开始有说明），这里只解决参数问题。
+[env]
+BINDGEN_EXTRA_CLANG_ARGS_x86_64_pc_windows_msvc = "--target=x86_64-pc-windows-msvc -fms-compatibility -fdeclspec"

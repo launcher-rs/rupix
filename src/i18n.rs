@@ -755,6 +755,97 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "Picker: background"
             }
         }
+        "viewer.ocr" => {
+            if zh {
+                "识别"
+            } else {
+                "OCR"
+            }
+        }
+        "viewer.ocr_running" => {
+            if zh {
+                "识别中…"
+            } else {
+                "Recognizing…"
+            }
+        }
+        "viewer.ocr_busy" => {
+            if zh {
+                "识别中，请稍候"
+            } else {
+                "Recognition running"
+            }
+        }
+        "viewer.ocr_done" => {
+            if zh {
+                "识别到 {n} 行，已复制文本"
+            } else {
+                "{n} lines recognized, text copied"
+            }
+        }
+        "viewer.ocr_empty" => {
+            if zh {
+                "未识别到文字"
+            } else {
+                "No text found"
+            }
+        }
+        "viewer.ocr_no_models" => {
+            if zh {
+                "未找到 OCR 模型，请放入 {dir}"
+            } else {
+                "OCR models missing, place them in {dir}"
+            }
+        }
+        "viewer.ocr_fail" => {
+            if zh {
+                "识别失败：{error}"
+            } else {
+                "Recognition failed: {error}"
+            }
+        }
+        "viewer.ocr_panel_title" => {
+            if zh {
+                "识别结果（{n} 行）"
+            } else {
+                "OCR Results ({n} lines)"
+            }
+        }
+        "viewer.ocr_copy_all" => {
+            if zh {
+                "复制全部"
+            } else {
+                "Copy all"
+            }
+        }
+        "viewer.ocr_apply" => {
+            if zh {
+                "落为标注"
+            } else {
+                "Add as notes"
+            }
+        }
+        "viewer.ocr_copied" => {
+            if zh {
+                "已复制 {n} 行"
+            } else {
+                "Copied {n} lines"
+            }
+        }
+        "viewer.ocr_copy_one" => {
+            if zh {
+                "已复制：{text}"
+            } else {
+                "Copied: {text}"
+            }
+        }
+        "viewer.ocr_applied" => {
+            if zh {
+                "已落为 {n} 条标注"
+            } else {
+                "Added {n} notes"
+            }
+        }
         "viewer.copy" => {
             if zh {
                 "复制"

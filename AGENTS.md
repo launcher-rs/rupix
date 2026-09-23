@@ -29,7 +29,7 @@ cargo test             # 运行测试（如有）
 ## 3. 代码风格
 
 - 使用 `cargo fmt` 默认风格，4 空格缩进。
-- 文件 / 模块按功能划分：`capture.rs`（首帧捕获共享）/ `overlay.rs`（区域选择浮层，含窗口吸附）/ `viewer.rs`（预览标注）/ `export.rs`（烧录保存复制）/ `picker.rs`（屏幕取色）/ `window.rs`（顶层窗口枚举，Windows；其他平台空实现）/ `hotkey.rs`（快捷键）/ `tray.rs`（托盘）/ `app.rs`（设置窗口）/ `cli.rs`（命令行截图：全屏 / 区域直存 PNG）/ `i18n.rs`（界面语言：中英内置，外部语言文件扩展）。新增模块同步更新此行。
+- 文件 / 模块按功能划分：`capture.rs`（首帧捕获共享）/ `overlay.rs`（区域选择浮层，含窗口吸附）/ `viewer.rs`（预览标注）/ `export.rs`（烧录保存复制）/ `picker.rs`（屏幕取色）/ `window.rs`（顶层窗口枚举，Windows；其他平台空实现）/ `hotkey.rs`（快捷键）/ `tray.rs`（托盘）/ `app.rs`（设置窗口）/ `cli.rs`（命令行截图：全屏 / 区域直存 PNG）/ `i18n.rs`（界面语言：中英内置，外部语言文件扩展）/ `ocr.rs`（离线 OCR：ocr-rs + PP-OCRv5 mobile，后台识别底图并落成文字标注）。新增模块同步更新此行。
 - 公开 API 必须有文档注释，内部复杂逻辑必须有行内注释。
 - 错误处理优先返回 `anyhow::Result` / `std::io::Result` 或自定义错误枚举，禁止在库逻辑中直接 `unwrap()` / `expect()`（示例与测试代码除外）。
 - UI 文案默认中文，预留英文国际化接口。

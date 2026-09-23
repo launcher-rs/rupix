@@ -9,6 +9,7 @@ mod cli;
 mod export;
 mod hotkey;
 mod i18n;
+mod ocr;
 mod overlay;
 mod picker;
 mod window;

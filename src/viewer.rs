@@ -13,6 +13,8 @@
 //!   每条文字底色独立，底色块点开取色器可设底色（默认跟随字色自适应）。
 //! - 默认矩形工具（打开即画，单击不成形）；空格按住 / 中键拖拽可临时平移，与工具无关。
 //! - `Ctrl + 滚轮`、`+` / `-` / `0`、`V` / `1-8` 切工具、Esc 快捷键齐全。
+//! - 操作排“识别”按钮后台跑 OCR（PP-OCRv5 mobile）：图上编号矩形框标出行位置，
+//!   右侧面板默认列出全部文字，点框 / 点行双向选中（文本进剪贴板），确认后可落为标注。
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -35,10 +37,11 @@ use crate::{
     app::{PreviewImage, RupixApp, load_save_dir},
     capture::cap_log,
     export::{
-        copy_image_and_file_to_clipboard, copy_png_to_clipboard, load_system_font, png_bytes,
-        render_export,
+        copy_image_and_file_to_clipboard, copy_png_to_clipboard, load_rgba, load_system_font,
+        measure_text_width, png_bytes, render_export,
     },
     i18n::{tr, tr_fmt},
+    ocr,
     shapes::{AnnoColor, PixelRect, Shape},
 };
 
@@ -140,6 +143,16 @@ enum ViewerAction {
     WidthNudge(f32),
     /// 切换文字背景显示。
     TextBg,
+    /// 识别图中文字（后台跑 OCR，结果进面板，可复制 / 落为标注）。
+    Ocr,
+    /// 复制面板里全部识别文本。
+    OcrCopyAll,
+    /// 点框 / 点行选中的识别行：两侧同步高亮，文本进剪贴板（状态栏回显确认）。
+    OcrSelectLine(usize),
+    /// 把面板里的识别行落成文字标注。
+    OcrApply,
+    /// 关闭 OCR 结果面板。
+    CloseOcrPanel,
     /// 打开取色器并设为底色目标（点底色块用；取色只改字色）。
     PickBg,
     /// 展开 / 收起自定义颜色选择器。
@@ -486,6 +499,14 @@ struct ImageViewer {
     last_saved: Option<PathBuf>,
     /// 是否有未保存的标注修改（Esc 关窗前据此决定是否弹出确认）。
     dirty: bool,
+    /// OCR 是否正在后台运行（跑着时再点识别直接提示，不重开任务）。
+    ocr_running: bool,
+    /// 最近一次识别的行（面板展示用；落为标注只是快照，之后改标注不影响这里）。
+    ocr_lines: Vec<ocr::OcrLine>,
+    /// 是否展开 OCR 结果面板。
+    show_ocr_panel: bool,
+    /// OCR 双向选中的行号（点框 / 点行互相同步高亮，None 表示未选中）。
+    selected_ocr: Option<usize>,
     /// 是否正在显示关闭确认浮层（有未保存修改时 Esc 弹出三选一）。
     confirm_close: bool,
 }
@@ -591,6 +612,10 @@ impl ImageViewer {
             last_saved: None,
             // 新窗口无标注，自然是干净状态。
             dirty: false,
+            ocr_running: false,
+            ocr_lines: Vec::new(),
+            show_ocr_panel: false,
+            selected_ocr: None,
             confirm_close: false,
         }
     }
@@ -769,6 +794,16 @@ impl ImageViewer {
                 cx.notify();
             }
             ViewerAction::Copy => self.copy_image(cx),
+            ViewerAction::Ocr => self.run_ocr(cx),
+            ViewerAction::OcrCopyAll => self.copy_ocr_lines(cx),
+            ViewerAction::OcrSelectLine(i) => self.select_ocr_line(i, cx),
+            ViewerAction::OcrApply => self.apply_ocr_lines(cx),
+            ViewerAction::CloseOcrPanel => {
+                // 收起面板与提取层，选中一并清除，再点识别会被新结果替换。
+                self.show_ocr_panel = false;
+                self.selected_ocr = None;
+                cx.notify();
+            }
             ViewerAction::Save => {
                 // 工具条保存只管落盘，返回值（成功与否）由状态栏反馈。
                 let _ = self.save_image(cx);
@@ -1296,6 +1331,155 @@ impl ImageViewer {
         Some(render_export(&base, full, &self.shapes, &self.font))
     }
 
+    /// 开始 OCR：后台线程识别整张底图，完成后落成文字标注并复制文本。
+    ///
+    /// 推理阻塞约 0.6s，绝不能占 UI 线程；经 `background_executor` 跑，
+    /// 回来用弱引用更新（窗口已关则静默丢弃）。
+    fn run_ocr(&mut self, cx: &mut Context<Self>) {
+        // 重复点击直接提示，不叠任务。
+        if self.ocr_running {
+            let msg = tr("viewer.ocr_busy");
+            self.set_viewer_status(&msg, cx);
+            return;
+        }
+        // 模型缺失先指路，不进任务。
+        if !ocr::models_available() {
+            let msg = tr_fmt(
+                "viewer.ocr_no_models",
+                &[("dir", &ocr::models_hint().display().to_string())],
+            );
+            self.set_viewer_status(&msg, cx);
+            return;
+        }
+        // 底图读内存（后台线程只传像素，不碰文件与视图）。
+        let Some(base) = load_rgba(&self.preview.path) else {
+            self.set_viewer_status(&tr("viewer.export_fail"), cx);
+            return;
+        };
+        self.ocr_running = true;
+        let msg = tr("viewer.ocr_running");
+        self.set_viewer_status(&msg, cx);
+        cx.spawn(async move |weak, cx| {
+            // 推理在后台池阻塞跑，主线程只等结果。
+            let out = cx
+                .background_executor()
+                .spawn(async move { ocr::recognize_image(&base) })
+                .await;
+            // 窗口已关则丢弃，不报错。
+            let _ = weak.update(cx, |this, cx| this.finish_ocr(out, cx));
+        })
+        .detach();
+    }
+
+    /// OCR 完成：行存进面板展示，文本进剪贴板；**不自动落标注**。
+    ///
+    /// 自动 overlay 几个问题：重排字体与原图对不齐看着别扭，
+    /// 长行点进编辑框会被固定尺寸截断。改为面板里看全文，
+    /// 用户确认后再点“落为标注”（见 [`Self::apply_ocr_lines`]）。
+    fn finish_ocr(&mut self, out: anyhow::Result<Vec<ocr::OcrLine>>, cx: &mut Context<Self>) {
+        self.ocr_running = false;
+        let lines = match out {
+            Err(error) => {
+                let msg = tr_fmt("viewer.ocr_fail", &[("error", &error.to_string())]);
+                self.set_viewer_status(&msg, cx);
+                return;
+            }
+            Ok(lines) => lines,
+        };
+        // 存快照并展开提取层（空结果就不打扰了），选中清零。
+        self.ocr_lines = lines;
+        self.show_ocr_panel = !self.ocr_lines.is_empty();
+        self.selected_ocr = None;
+        if self.ocr_lines.is_empty() {
+            self.set_viewer_status(&tr("viewer.ocr_empty"), cx);
+            return;
+        }
+        // 文本同时进剪贴板，方便直接粘贴到别处；面板里还能再复制。
+        cx.write_to_clipboard(rgpui::ClipboardItem::new_string(ocr::lines_text(
+            &self.ocr_lines,
+        )));
+        let msg = tr_fmt(
+            "viewer.ocr_done",
+            &[("n", &self.ocr_lines.len().to_string())],
+        );
+        self.set_viewer_status(&msg, cx);
+    }
+
+    /// 复制面板里全部识别文本（识别完成已自动复制一次，这里供稍后手动补拷）。
+    fn copy_ocr_lines(&mut self, cx: &mut Context<Self>) {
+        if self.ocr_lines.is_empty() {
+            return;
+        }
+        cx.write_to_clipboard(rgpui::ClipboardItem::new_string(ocr::lines_text(
+            &self.ocr_lines,
+        )));
+        let msg = tr_fmt(
+            "viewer.ocr_copied",
+            &[("n", &self.ocr_lines.len().to_string())],
+        );
+        self.set_viewer_status(&msg, cx);
+    }
+
+    /// 点框 / 点行选中识别行：两侧同步高亮，文本进剪贴板，状态栏回显前 30 字确认。
+    fn select_ocr_line(&mut self, idx: usize, cx: &mut Context<Self>) {
+        let Some(line) = self.ocr_lines.get(idx) else {
+            return;
+        };
+        self.selected_ocr = Some(idx);
+        cx.write_to_clipboard(rgpui::ClipboardItem::new_string(line.text.clone()));
+        // 状态栏只回显前 30 字，长行不撑爆。
+        let snippet: String = line.text.chars().take(30).collect();
+        let msg = tr_fmt("viewer.ocr_copy_one", &[("text", &snippet)]);
+        self.set_viewer_status(&msg, cx);
+    }
+
+    /// 把面板里的识别行落成文字标注（位置取检测框左上，字号按框宽拟合）。
+    ///
+    /// 拟合保证 overlay 上看着对齐，落成标注还是同一尺寸，所见即所得；
+    /// 无字体时回退框高（`ocr::line_text_size`）。
+    /// overlay 是近似排版（字体与原图不同，不会像素级重合），只在用户确认后执行；
+    /// 一次多条，撤销需逐条退。
+    fn apply_ocr_lines(&mut self, cx: &mut Context<Self>) {
+        if self.ocr_lines.is_empty() {
+            return;
+        }
+        // 字体懒加载（烧录同款），量字宽拟合用；失败也不阻断，最多不对齐。
+        if !self.font_loaded {
+            self.font = load_system_font();
+            self.font_loaded = true;
+        }
+        for line in &self.ocr_lines {
+            let base = line.rect.h;
+            let size = match &self.font {
+                Some(font) => ocr::fit_text_size(
+                    measure_text_width(font, &line.text, base),
+                    line.rect.w,
+                    base,
+                ),
+                None => ocr::line_text_size(base),
+            };
+            self.shapes.push(Shape::Text {
+                pos: (line.rect.x, line.rect.y),
+                content: line.text.clone(),
+                color: self.color,
+                size,
+                bg: self.text_bg,
+                bg_color: self.text_bg_color,
+            });
+        }
+        self.redo_stack.clear();
+        // 新标注已提交，后续 Esc 关窗需提示保存。
+        self.dirty = true;
+        // 落完收起提取层并清选中，标注区清爽，继续用选择工具微调。
+        self.show_ocr_panel = false;
+        self.selected_ocr = None;
+        let msg = tr_fmt(
+            "viewer.ocr_applied",
+            &[("n", &self.ocr_lines.len().to_string())],
+        );
+        self.set_viewer_status(&msg, cx);
+    }
+
     /// 复制烧录图到系统剪贴板：图片与文件双格式，Word 粘贴为图片、文件夹粘贴为文件。
     fn copy_image(&mut self, cx: &mut Context<Self>) {
         let main = self.main.clone();
@@ -1804,6 +1988,10 @@ impl Render for ImageViewer {
                             // 确认浮层已展开：二次 Esc 视为取消，留在窗口继续编辑。
                             this.confirm_close = false;
                             cx.notify();
+                        } else if this.show_ocr_panel {
+                            // 先收 OCR 面板，识别行保留，再点识别会被新结果替换。
+                            this.show_ocr_panel = false;
+                            cx.notify();
                         } else if this.show_color_picker {
                             // 优先收起拾色器面板，避免想关面板却退出整个窗口。
                             this.show_color_picker = false;
@@ -1931,6 +2119,7 @@ impl Render for ImageViewer {
                     .child(self.bg_swatch(cx))
                     .child(self.bar_button(cx, tr("viewer.copy"), ViewerAction::Copy))
                     .child(self.bar_button(cx, tr("viewer.save"), ViewerAction::Save))
+                    .child(self.bar_button(cx, tr("viewer.ocr"), ViewerAction::Ocr))
                     .child(
                         div()
                             .flex_1()
@@ -2091,11 +2280,14 @@ impl Render for ImageViewer {
                 let top = (self.area_h - dh) / 2.0 + self.offset.1;
                 let zoom = self.zoom;
                 let area = div().flex_1().relative().overflow_hidden();
-                // 平移中一律抓手；空格按住时预告可平移；其余按工具显示。
+                // 平移中一律抓手；空格按住时预告可平移；OCR 模式下箭头（框上有单独手形）；
+                // 其余按工具显示。
                 let area = if self.pan_last.is_some() {
                     area.cursor(CursorStyle::ClosedHand)
                 } else if self.space_held {
                     area.cursor(CursorStyle::OpenHand)
+                } else if self.show_ocr_panel {
+                    area.cursor(CursorStyle::Arrow)
                 } else {
                     match self.tool {
                         AnnoTool::Select => {
@@ -2172,131 +2364,136 @@ impl Render for ImageViewer {
                             this.zoom_by(1.0 / ZOOM_STEP, cx);
                         }
                     }));
-                let area = area.child(
-                    div()
-                        .absolute()
-                        .left(px(left))
-                        .top(px(top))
-                        .w(px(dw))
-                        .h(px(dh))
-                        .relative()
-                        // 底图。
-                        .child(img(self.preview.path.clone()).w(px(dw)).h(px(dh)))
-                        // 文字标注层（每条独立底色，开关只决定新建默认值）。
-                        .children({
-                            let mut marks: Vec<Div> = Vec::new();
-                            for shape in &self.shapes {
-                                if let Shape::Text {
-                                    pos,
-                                    content,
-                                    color,
-                                    size,
-                                    bg,
-                                    bg_color,
-                                } = shape
-                                {
-                                    let sz = size * zoom;
-                                    let mut d = div()
-                                        .absolute()
-                                        .left(px(pos.0 * zoom))
-                                        .top(px(pos.1 * zoom))
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_sm()
-                                        .text_color(color.to_rgpui())
-                                        .text_size(px(sz))
-                                        .child(content.clone());
-                                    // 按条底色：用该条自己的底色，透明度统一。
-                                    if *bg {
-                                        d = d.bg(bg_color.as_text_bg_rgpui());
-                                    }
-                                    marks.push(d);
-                                }
-                            }
-                            // 正在编辑的 inline 输入框（所见即所得：底色跟随当前开关与底色）。
-                            if let Some(editing) = &self.text_editing {
-                                let input_text_size = DEFAULT_TEXT_SIZE * zoom;
-                                let input_border = self.color.to_rgpui();
-                                let edit_bg = self.text_bg;
-                                let edit_color = self.color;
-                                let edit_bg_color = self.text_bg_color;
-                                let mut editor = div()
+                // 图片容器组装完后，OCR 提取层按需盖在最上（照片式原位文字）。
+                let container = div()
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .w(px(dw))
+                    .h(px(dh))
+                    .relative()
+                    // 底图。
+                    .child(img(self.preview.path.clone()).w(px(dw)).h(px(dh)))
+                    // 文字标注层（每条独立底色，开关只决定新建默认值）。
+                    .children({
+                        let mut marks: Vec<Div> = Vec::new();
+                        for shape in &self.shapes {
+                            if let Shape::Text {
+                                pos,
+                                content,
+                                color,
+                                size,
+                                bg,
+                                bg_color,
+                            } = shape
+                            {
+                                let sz = size * zoom;
+                                let mut d = div()
                                     .absolute()
-                                    .left(px(editing.container_pos.0))
-                                    .top(px(editing.container_pos.1))
-                                    .min_w(px(180.0))
-                                    .max_w(px(400.0))
+                                    .left(px(pos.0 * zoom))
+                                    .top(px(pos.1 * zoom))
                                     .px_2()
                                     .py_1()
                                     .rounded_sm()
-                                    .border_1()
-                                    .border_color(input_border)
-                                    .text_color(edit_color.to_rgpui())
-                                    .text_size(px(input_text_size));
-                                if edit_bg {
-                                    editor = editor.bg(edit_bg_color.as_text_bg_rgpui());
+                                    .text_color(color.to_rgpui())
+                                    .text_size(px(sz))
+                                    .child(content.clone());
+                                // 按条底色：用该条自己的底色，透明度统一。
+                                if *bg {
+                                    d = d.bg(bg_color.as_text_bg_rgpui());
                                 }
-                                marks.push(
-                                    editor
-                                        // 阻止输入框点击冒泡到图片区，避免触发 commit + place。
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|_, _ev, _, cx| {
-                                                cx.stop_propagation();
-                                            }),
-                                        )
-                                        .child(
-                                            Input::new(&editing.input)
-                                                .appearance(false)
-                                                .bordered(false)
-                                                .text_color(edit_color.to_rgpui())
-                                                .text_size(px(input_text_size)),
-                                        ),
-                                );
+                                marks.push(d);
                             }
-                            marks
-                        })
-                        // 矢量标注画布。
-                        .child({
-                            let paint_shapes = self.shapes.clone();
-                            let paint_draft = self.draft.clone();
-                            let base_image = self.base_image.clone();
-                            canvas(
-                                move |bounds, _, _| bounds,
-                                move |_bounds, paint_bounds, window, _| {
-                                    let origin = paint_bounds.origin;
-                                    for shape in paint_shapes.iter().chain(paint_draft.iter()) {
-                                        if let Shape::Mosaic { rect } = shape
-                                            && let Some(base) = &base_image
-                                        {
-                                            paint_mosaic_preview(
-                                                window,
-                                                base,
-                                                *rect,
-                                                zoom,
-                                                origin.x.as_f32(),
-                                                origin.y.as_f32(),
-                                            );
-                                        }
-                                        if let Some((path, color)) = shape_path(
-                                            shape,
+                        }
+                        // 正在编辑的 inline 输入框（所见即所得：底色跟随当前开关与底色）。
+                        if let Some(editing) = &self.text_editing {
+                            let input_text_size = DEFAULT_TEXT_SIZE * zoom;
+                            let input_border = self.color.to_rgpui();
+                            let edit_bg = self.text_bg;
+                            let edit_color = self.color;
+                            let edit_bg_color = self.text_bg_color;
+                            let mut editor = div()
+                                .absolute()
+                                .left(px(editing.container_pos.0))
+                                .top(px(editing.container_pos.1))
+                                .min_w(px(180.0))
+                                .max_w(px(400.0))
+                                .px_2()
+                                .py_1()
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(input_border)
+                                .text_color(edit_color.to_rgpui())
+                                .text_size(px(input_text_size));
+                            if edit_bg {
+                                editor = editor.bg(edit_bg_color.as_text_bg_rgpui());
+                            }
+                            marks.push(
+                                editor
+                                    // 阻止输入框点击冒泡到图片区，避免触发 commit + place。
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|_, _ev, _, cx| {
+                                            cx.stop_propagation();
+                                        }),
+                                    )
+                                    .child(
+                                        Input::new(&editing.input)
+                                            .appearance(false)
+                                            .bordered(false)
+                                            .text_color(edit_color.to_rgpui())
+                                            .text_size(px(input_text_size)),
+                                    ),
+                            );
+                        }
+                        marks
+                    })
+                    // 矢量标注画布。
+                    .child({
+                        let paint_shapes = self.shapes.clone();
+                        let paint_draft = self.draft.clone();
+                        let base_image = self.base_image.clone();
+                        canvas(
+                            move |bounds, _, _| bounds,
+                            move |_bounds, paint_bounds, window, _| {
+                                let origin = paint_bounds.origin;
+                                for shape in paint_shapes.iter().chain(paint_draft.iter()) {
+                                    if let Shape::Mosaic { rect } = shape
+                                        && let Some(base) = &base_image
+                                    {
+                                        paint_mosaic_preview(
+                                            window,
+                                            base,
+                                            *rect,
                                             zoom,
                                             origin.x.as_f32(),
                                             origin.y.as_f32(),
-                                        ) {
-                                            window.paint_path(path, color);
-                                        }
+                                        );
                                     }
-                                },
-                            )
-                            .absolute()
-                            // canvas 必须显式锚定到图片容器左上角，否则会按静态位置排到 img 后面。
-                            .left(px(0.0))
-                            .top(px(0.0))
-                            .w(px(dw))
-                            .h(px(dh))
-                        }),
-                );
+                                    if let Some((path, color)) = shape_path(
+                                        shape,
+                                        zoom,
+                                        origin.x.as_f32(),
+                                        origin.y.as_f32(),
+                                    ) {
+                                        window.paint_path(path, color);
+                                    }
+                                }
+                            },
+                        )
+                        .absolute()
+                        // canvas 必须显式锚定到图片容器左上角，否则会按静态位置排到 img 后面。
+                        .left(px(0.0))
+                        .top(px(0.0))
+                        .w(px(dw))
+                        .h(px(dh))
+                    });
+                let container = if self.show_ocr_panel {
+                    container.child(self.ocr_overlay(cx, zoom))
+                } else {
+                    container
+                };
+                let area = area.child(container);
                 let area = if self.show_color_picker {
                     area.child(
                         div()
@@ -2333,6 +2530,12 @@ impl Render for ImageViewer {
                 } else {
                     area
                 };
+                // OCR 右侧面板：默认列出全部文字，确认浮层之下（确认优先模态）。
+                let area = if self.show_ocr_panel {
+                    area.child(self.ocr_side_panel(cx))
+                } else {
+                    area
+                };
                 // 关闭确认浮层：有未保存修改时 Esc 弹出，模态盖住图片区防误触。
                 if self.confirm_close {
                     area.child(self.close_confirm(cx))
@@ -2346,6 +2549,223 @@ impl Render for ImageViewer {
 }
 
 impl ImageViewer {
+    /// OCR 提取层（编号矩形框）：只画框，不重排文字。
+    ///
+    /// 之前 overlay 重排文字的教训：检测框偏大 / 并行时，拟合字撑爆行间没法看。
+    /// 只画框则对齐天然精确（框即检测结果），文字一律走右侧面板看；
+    /// 点框 / 点行双向选中高亮，复制走状态栏与剪贴板。
+    /// 框层吞掉左键按下 / 弹起 / 移动（OCR 模式下图片区不落笔，见 `on_anno_down` 守卫），
+    /// 滚轮放行（Ctrl+滚轮照常缩放）。
+    fn ocr_overlay(&self, cx: &mut Context<Self>, zoom: f32) -> impl IntoElement {
+        let selected = self.selected_ocr;
+        div()
+            .absolute()
+            .left(px(0.0))
+            .top(px(0.0))
+            .right(px(0.0))
+            .bottom(px(0.0))
+            .occlude()
+            // 只截停左键按下 / 弹起（OCR 模式下图片区不落笔）；
+            // 移动事件放行，中键 / 空格平移照常可用。
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _ev, _, cx| {
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|_, _ev, _, cx| {
+                    cx.stop_propagation();
+                }),
+            )
+            .children(
+                self.ocr_lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, line)| {
+                        // 每框一个点击闭包，实体按框克隆（`Entity` 是廉价句柄）。
+                        let view = cx.entity();
+                        let is_selected = selected == Some(i);
+                        div()
+                            .absolute()
+                            .id(format!("ocr-box-{i}"))
+                            .left(px(line.rect.x * zoom))
+                            .top(px(line.rect.y * zoom))
+                            .w(px(line.rect.w * zoom))
+                            .h(px(line.rect.h * zoom))
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .border_2()
+                            .border_color(if is_selected {
+                                rgb(0xFFFFFF)
+                            } else {
+                                rgb(0x66B2FF)
+                            })
+                            .bg(if is_selected {
+                                Rgba {
+                                    r: 0.3,
+                                    g: 0.6,
+                                    b: 1.0,
+                                    a: 0.18,
+                                }
+                            } else {
+                                Rgba {
+                                    r: 0.0,
+                                    g: 0.0,
+                                    b: 0.0,
+                                    a: 0.0,
+                                }
+                            })
+                            // 角标：框内左上角，点框时一眼对应面板行号。
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(px(0.0))
+                                    .top(px(0.0))
+                                    .px_1()
+                                    .rounded_sm()
+                                    .bg(rgb(0x66B2FF))
+                                    .text_color(rgb(0xFFFFFF))
+                                    .text_size(px(11.))
+                                    .child(format!("{}", i + 1)),
+                            )
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|_, _ev, _, cx| {
+                                    cx.stop_propagation();
+                                }),
+                            )
+                            .on_click(move |_, window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.handle(ViewerAction::OcrSelectLine(i), window, cx)
+                                });
+                            })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+    }
+
+    /// OCR 右侧面板：默认列出全部识别文字，点行与图上框双向选中高亮。
+    ///
+    /// 行可滚（多行截图防撑爆）；面板吞掉鼠标与滚轮，避免误触图片区。
+    fn ocr_side_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        let selected = self.selected_ocr;
+        let title = tr_fmt(
+            "viewer.ocr_panel_title",
+            &[("n", &self.ocr_lines.len().to_string())],
+        );
+        div()
+            .absolute()
+            .right(px(12.0))
+            .top(px(12.0))
+            .w(px(300.0))
+            .max_h(px(420.0))
+            .flex()
+            .flex_col()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(0x555555))
+            .bg(rgb(0x252525))
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _ev, _, cx| {
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|_, _ev, _, cx| {
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_move(cx.listener(|_, _ev, _, cx| cx.stop_propagation()))
+            .on_scroll_wheel(cx.listener(|_, _ev, _, cx| cx.stop_propagation()))
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .text_sm()
+                    .text_color(rgb(0xFFFFFF))
+                    .child(title),
+            )
+            .child(
+                div().id("ocr-rows").flex_1().overflow_y_scroll().children(
+                    self.ocr_lines
+                        .iter()
+                        .enumerate()
+                        .map(|(i, line)| {
+                            // 行也要可点：id 让它可交互，与图上框共用选中动作。
+                            let view = view.clone();
+                            let is_selected = selected == Some(i);
+                            div()
+                                .id(format!("ocr-row-{i}"))
+                                .px_3()
+                                .py_1()
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .bg(if is_selected {
+                                    rgb(0x1E90FF)
+                                } else {
+                                    rgb(0x252525)
+                                })
+                                .text_xs()
+                                .text_color(rgb(0xDDDDDD))
+                                .hover(|style| {
+                                    style.bg(if is_selected {
+                                        rgb(0x1E90FF)
+                                    } else {
+                                        rgb(0x3A3A3A)
+                                    })
+                                })
+                                .child(format!("{:>2}. {}", i + 1, line.text))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|_, _ev, _, cx| {
+                                        cx.stop_propagation();
+                                    }),
+                                )
+                                .on_click(move |_, window, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.handle(ViewerAction::OcrSelectLine(i), window, cx)
+                                    });
+                                })
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .child(self.mini_button(
+                        cx,
+                        "ocr-copy-all",
+                        tr("viewer.ocr_copy_all"),
+                        ViewerAction::OcrCopyAll,
+                        false,
+                    ))
+                    .child(self.mini_button(
+                        cx,
+                        "ocr-apply",
+                        tr("viewer.ocr_apply"),
+                        ViewerAction::OcrApply,
+                        true,
+                    ))
+                    .child(self.mini_button(
+                        cx,
+                        "ocr-close",
+                        "×",
+                        ViewerAction::CloseOcrPanel,
+                        false,
+                    )),
+            )
+    }
+
     /// 关闭确认浮层：有未保存标注时 Esc 弹出，居中模态三选一。
     ///
     /// 浮层盖住图片区并吞掉鼠标 / 滚轮事件，避免误触继续标注；
