@@ -347,10 +347,23 @@ fn draw_shape(
             content,
             color,
             size,
+            bg,
+            bg_color,
         } => {
             // 无字体时跳过，保证“至少能导出底图 + 图形”。
             if let Some(font) = font {
-                draw_text(img, font, local(pos.0, pos.1), content, *color, *size, clip);
+                // 有底色时用该条自己的底色（统一半透明），无底色传 None。
+                let bg_fill = if *bg { Some(*bg_color) } else { None };
+                draw_text(
+                    img,
+                    font,
+                    local(pos.0, pos.1),
+                    content,
+                    *color,
+                    *size,
+                    bg_fill,
+                    clip,
+                );
             }
         }
     }
@@ -587,6 +600,8 @@ fn in_clip(x: i32, y: i32, clip: &PixelRect) -> bool {
 }
 
 /// 单行文字绘制：逐字形取位图拼排（中文按字推进，无复杂塑形，截图标注够用）。
+// 参数多为烧录必需（位置 / 内容 / 颜色 / 字号 / 底色缺一不可），此处允许超限。
+#[allow(clippy::too_many_arguments)]
 fn draw_text(
     img: &mut RgbaImage,
     font: &FontVec,
@@ -594,11 +609,33 @@ fn draw_text(
     content: &str,
     color: AnnoColor,
     size: f32,
+    bg: Option<AnnoColor>,
     clip: &PixelRect,
 ) {
     let (x, y) = pos;
     let scale = PxScale::from(size.max(8.0));
     let scaled = font.as_scaled(scale);
+    // 先估算整行宽度（底色矩形用），与下方逐字推进共用同一 advance。
+    let text_w: f32 = content
+        .chars()
+        .map(|ch| scaled.h_advance(scaled.glyph_id(ch)))
+        .sum();
+    let text_h = scaled.ascent() - scaled.descent();
+    // 带底色时先铺该条自己的底色（统一半透明），内边距随字号缩放。
+    // 预览 div 也有 px_2 / py_1 内边距，这里按比例还原，保证所见即所得。
+    if let Some(bg_color) = bg {
+        let pad_x = size * 0.25;
+        let pad_y = size * 0.18;
+        fill_rect(
+            img,
+            x - pad_x,
+            y - pad_y,
+            text_w + pad_x * 2.0,
+            text_h + pad_y * 2.0,
+            bg_color.as_text_bg(),
+            clip,
+        );
+    }
     // 笔头从行首开始，基线 = 起始行 + 上伸部。
     let mut caret_x = x;
     let baseline = y + scaled.ascent();
@@ -676,6 +713,8 @@ mod tests {
                 content: "拾景test".to_string(),
                 color: AnnoColor::WHITE,
                 size: 20.0,
+                bg: true,
+                bg_color: AnnoColor::BLACK,
             },
         ];
         // 有字体则连文字一起烧录，无字体也应正常导出底图 + 图形。
@@ -683,6 +722,49 @@ mod tests {
         let out = render_export(&base, sel, &shapes, &font);
         assert_eq!(out.dimensions(), (100, 80));
         assert!(png_bytes(&out).is_some());
+    }
+
+    /// 文字底色按条独立：默认自适应，自定义底色原样保留（只统一透明度）。
+    #[test]
+    fn text_bg_per_shape() {
+        // 自适应默认：浅色字配黑底、深色字配白底，透明度统一。
+        assert_eq!(
+            AnnoColor::WHITE.text_bg_fill(),
+            AnnoColor(0, 0, 0, AnnoColor::TEXT_BG_ALPHA)
+        );
+        assert_eq!(
+            AnnoColor::BLACK.text_bg_fill(),
+            AnnoColor(255, 255, 255, AnnoColor::TEXT_BG_ALPHA)
+        );
+        // 自定义底色：原样保留 RGB，只统一压透明度。
+        assert_eq!(
+            AnnoColor::RED.as_text_bg(),
+            AnnoColor(231, 76, 60, AnnoColor::TEXT_BG_ALPHA)
+        );
+        // 同一底图上两条文字各用各的底色，导出不 panic 且尺寸正确。
+        let base = RgbaImage::from_pixel(120, 80, Rgba([200, 200, 200, 255]));
+        let sel = PixelRect::new(0.0, 0.0, 120.0, 80.0);
+        let shapes = vec![
+            Shape::Text {
+                pos: (10.0, 10.0),
+                content: "亮".to_string(),
+                color: AnnoColor::WHITE,
+                size: 20.0,
+                bg: true,
+                bg_color: AnnoColor::BLACK,
+            },
+            Shape::Text {
+                pos: (10.0, 40.0),
+                content: "暗".to_string(),
+                color: AnnoColor::BLACK,
+                size: 20.0,
+                bg: false,
+                bg_color: AnnoColor::WHITE,
+            },
+        ];
+        let font = load_system_font();
+        let out = render_export(&base, sel, &shapes, &font);
+        assert_eq!(out.dimensions(), (120, 80));
     }
 
     /// PNG 转 DIB：头尺寸与像素区断言（2x1 小图手算验证）。

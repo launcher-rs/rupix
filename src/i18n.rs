@@ -720,6 +720,41 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "Bg"
             }
         }
+        "viewer.text_bg_latest" => {
+            if zh {
+                "已切换最近一条文字底色（新建沿用）"
+            } else {
+                "Latest text bg toggled (also default for new)"
+            }
+        }
+        "viewer.text_bg_default" => {
+            if zh {
+                "已切换新建文字底色"
+            } else {
+                "Default bg for new text toggled"
+            }
+        }
+        "viewer.bg_color_applied" => {
+            if zh {
+                "已设置底色（最近一条+新建沿用）"
+            } else {
+                "Bg color set (latest + new)"
+            }
+        }
+        "viewer.picker_fg" => {
+            if zh {
+                "取色：字色"
+            } else {
+                "Picker: text"
+            }
+        }
+        "viewer.picker_bg" => {
+            if zh {
+                "取色：底色"
+            } else {
+                "Picker: background"
+            }
+        }
         "viewer.copy" => {
             if zh {
                 "复制"
@@ -736,9 +771,9 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
         }
         "viewer.op_hint" => {
             if zh {
-                "Ctrl+滚轮缩放 · [ ]线宽 · Esc 关闭"
+                "V/1-8切换 · 空格平移 · Ctrl+滚轮缩放 · Esc关闭"
             } else {
-                "Ctrl+wheel zoom · [ ] width · Esc closes"
+                "V/1-8 tools · Space pan · Ctrl+wheel zoom · Esc closes"
             }
         }
         // —— 预览标注排 ——

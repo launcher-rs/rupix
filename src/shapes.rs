@@ -101,6 +101,49 @@ impl AnnoColor {
     pub fn to_hex(self) -> String {
         format!("#{:02X}{:02X}{:02X}", self.0, self.1, self.2)
     }
+
+    /// 相对亮度估算（0 黑 ~ 1 白，文字底色深浅自适应用）。
+    pub fn luminance(self) -> f32 {
+        (0.299 * self.0 as f32 + 0.587 * self.1 as f32 + 0.114 * self.2 as f32) / 255.0
+    }
+
+    /// 文字是否为浅色（亮度高，配深色底才看得清）。
+    pub fn is_light(self) -> bool {
+        self.luminance() > 0.6
+    }
+
+    /// 文字底色统一透明度（`140/255 ≈ 0.55`，预览与烧录共用，所见即所得）。
+    pub const TEXT_BG_ALPHA: u8 = 140;
+
+    /// 自动底色（不透明）：浅色字配黑、深色字配白，避免黑字黑底看不见。
+    pub fn auto_bg(self) -> Self {
+        if self.is_light() {
+            Self(0, 0, 0, 255)
+        } else {
+            Self(255, 255, 255, 255)
+        }
+    }
+
+    /// 作为文字底色使用（统一压到半透明，无视原 alpha，保证各处一致）。
+    pub fn as_text_bg(self) -> Self {
+        Self(self.0, self.1, self.2, Self::TEXT_BG_ALPHA)
+    }
+
+    /// 作为文字底色使用（预览 div 用，与烧录同透明度）。
+    pub fn as_text_bg_rgpui(self) -> rgpui::Rgba {
+        let c = self.to_rgpui();
+        rgpui::Rgba {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+            a: Self::TEXT_BG_ALPHA as f32 / 255.0,
+        }
+    }
+
+    /// 文字底色填充（烧录用）：浅色字配半透明黑，深色字配半透明白，避免黑字黑底看不见。
+    pub fn text_bg_fill(self) -> Self {
+        self.auto_bg().as_text_bg()
+    }
 }
 
 /// 浮层上的矢量标注，坐标均为全图图片像素。
@@ -168,6 +211,10 @@ pub enum Shape {
         color: AnnoColor,
         /// 字号（图片像素，近似字高）。
         size: f32,
+        /// 是否带底色（按条独立存储，工具条开关只决定新建默认值）。
+        bg: bool,
+        /// 底色（按条独立存储，可经取色器设置；新建默认跟随字色自适应）。
+        bg_color: AnnoColor,
     },
 }
 

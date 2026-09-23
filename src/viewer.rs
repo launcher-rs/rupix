@@ -9,15 +9,17 @@
 //!     预设颜色（精简，自定义色走取色器）/ 操作提示；
 //! - 标注画在覆盖图片的 `canvas` 上实时预览，
 //!   保存 / 复制时经 `export::render_export` 烧录为同一坐标系的最终图；
-//! - 文字工具支持：点击新建、点击已有文字重新编辑、Ctrl+拖动移动。
-//! - `Ctrl + 滚轮`、`+` / `-` / `0`、Esc 快捷键齐全。
+//! - 文字工具支持：点击新建、点击已有文字重新编辑、Ctrl+拖动移动；
+//!   每条文字底色独立，底色块点开取色器可设底色（默认跟随字色自适应）。
+//! - 默认矩形工具（打开即画，单击不成形）；空格按住 / 中键拖拽可临时平移，与工具无关。
+//! - `Ctrl + 滚轮`、`+` / `-` / `0`、`V` / `1-8` 切工具、Esc 快捷键齐全。
 
 use std::{path::PathBuf, sync::Arc};
 
 use ab_glyph::FontVec;
 use image::RgbaImage;
 use rgpui::{
-    Bounds, Context, CursorStyle, Div, Entity, FocusHandle, KeyDownEvent, MouseButton,
+    Bounds, Context, CursorStyle, Div, Entity, FocusHandle, KeyDownEvent, KeyUpEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Path, PathBuilder, Pixels, Render, Rgba,
     ScrollDelta, ScrollWheelEvent, SharedString, Slider, SliderEvent, SliderState, Subscription,
     TitlebarOptions, Window, WindowBounds, WindowOptions, canvas,
@@ -95,6 +97,24 @@ enum AnnoTool {
     Text,
 }
 
+impl AnnoTool {
+    /// 快捷键切工具：`V` 选择，`1-8` 按标注排顺序（矩形 / 椭圆 / 箭头 / 画笔 / 荧光笔 / 橡皮擦 / 马赛克 / 文字）。
+    fn from_shortcut(key: &str) -> Option<Self> {
+        match key {
+            "v" => Some(Self::Select),
+            "1" => Some(Self::Rect),
+            "2" => Some(Self::Ellipse),
+            "3" => Some(Self::Arrow),
+            "4" => Some(Self::Pen),
+            "5" => Some(Self::Highlighter),
+            "6" => Some(Self::Eraser),
+            "7" => Some(Self::Mosaic),
+            "8" => Some(Self::Text),
+            _ => None,
+        }
+    }
+}
+
 /// 工具条动作（按钮与快捷键共用分发，Debug 用于诊断日志）。
 #[derive(Clone, Copy, Debug)]
 enum ViewerAction {
@@ -120,6 +140,8 @@ enum ViewerAction {
     WidthNudge(f32),
     /// 切换文字背景显示。
     TextBg,
+    /// 打开取色器并设为底色目标（点底色块用；取色只改字色）。
+    PickBg,
     /// 展开 / 收起自定义颜色选择器。
     ToggleColorPicker,
     /// 打开最近一次保存的文件（系统默认程序）。
@@ -210,12 +232,41 @@ pub fn open_viewer<T: 'static>(main: Entity<RupixApp>, cx: &mut Context<T>, prev
             // 打开即聚焦，Esc / 快捷键立即可用。
             let handle = view.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
+            // 系统 X 也要过脏检查，否则有标注点 X 会静默丢失。
+            guard_viewer_close(window, cx, view.clone());
             view
         },
     );
     if let Err(error) = opened {
         cap_log(&format!("预览窗口打开失败：{error:?}"));
     }
+}
+
+/// 注册系统标题栏 X 关闭拦截：之前只有 Esc 走脏检查，点 X 会静默丢弃未保存标注。
+///
+/// 有未保存修改时先提交输入中的文字、丢弃未成形草稿，展开窗内确认浮层并取消本次系统关闭；
+/// 无修改直接放行；确认浮层里的“不保存”走 `remove_window`（不触发本回调），不会自锁。
+fn guard_viewer_close(window: &mut Window, cx: &mut rgpui::App, view: Entity<ImageViewer>) {
+    window.on_window_should_close(cx, move |window, cx| {
+        // `Entity::update` 直接返回值（`WeakEntity` 才包 `Result`），这里无需拆包。
+        let veto = view.update(cx, |this, cx| {
+            // 输入中的文字先落为标注，避免点 X 把刚打的字静默丢掉。
+            if this.text_editing.is_some() {
+                this.commit_text(window, cx);
+            }
+            // 未成形草稿本就不会进保存结果，这里直接丢弃，只看已提交的脏标记。
+            this.draft = None;
+            this.anchor = None;
+            if this.dirty {
+                this.confirm_close = true;
+                cx.notify();
+                true
+            } else {
+                false
+            }
+        });
+        !veto
+    });
 }
 
 /// 构造预览窗口选项：系统标题栏显示带图片尺寸的窗口名。
@@ -334,6 +385,8 @@ fn open_viewer_in_app(main: Entity<RupixApp>, cx: &mut rgpui::App, preview: Prev
             });
             let handle = view.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
+            // 本地图片入口同样拦截系统 X，避免未保存标注被静默丢弃。
+            guard_viewer_close(window, cx, view.clone());
             view
         },
     );
@@ -378,6 +431,8 @@ struct ImageViewer {
     offset: (f32, f32),
     /// 平移中上一次的鼠标位置（窗口坐标），None 表示未按下。
     pan_last: Option<(f32, f32)>,
+    /// 空格是否按住（按住时左键拖拽临时平移，与当前工具无关）。
+    space_held: bool,
     /// 当前标注工具。
     tool: AnnoTool,
     /// 已提交的标注（图片像素坐标）。
@@ -403,8 +458,14 @@ struct ImageViewer {
     width_subscription: Subscription,
     /// 正在编辑的文字标注（点击后出现，回车/失焦提交）。
     text_editing: Option<TextEdit>,
-    /// 文字背景是否显示（默认开启）。
+    /// 当前文字底色：编辑中实时预览；未编辑时切换最近一条并作为新建默认（旧文字各自独立）。
     text_bg: bool,
+    /// 当前底色颜色（取色器底色目标改这里；未手动指定时跟随字色自适应）。
+    text_bg_color: AnnoColor,
+    /// 底色是否被手动指定过（指定后换字色不再自动适配底色）。
+    bg_color_custom: bool,
+    /// 取色器当前目标：`false` 改字色，`true` 改底色。
+    picker_for_bg: bool,
     /// Ctrl+拖动文字的临时状态。
     drag_text: Option<DragText>,
     /// 选择工具拖动普通标注的临时状态。
@@ -459,7 +520,12 @@ impl ImageViewer {
                 .on_change(move |color, _window, cx| {
                     let anno = AnnoColor::from_hsla(color);
                     view.update(cx, |this, cx| {
-                        this.color = anno;
+                        // 取色器双目标：底色模式改底色，默认改字色。
+                        if this.picker_for_bg {
+                            this.apply_bg_color(anno, cx);
+                        } else {
+                            this.apply_anno_color(anno);
+                        }
                         cx.notify();
                     });
                 })
@@ -495,7 +561,9 @@ impl ImageViewer {
             area_h,
             offset: (0.0, 0.0),
             pan_last: None,
-            tool: AnnoTool::Select,
+            space_held: false,
+            // 默认矩形：打开即画（单击不成形，误触成本低），纯查看按 V 切回选择。
+            tool: AnnoTool::Rect,
             shapes: Vec::new(),
             redo_stack: Vec::new(),
             draft: None,
@@ -508,6 +576,10 @@ impl ImageViewer {
             width_subscription,
             text_editing: None,
             text_bg: true,
+            // 默认红字配自适应底（浅色字黑底、深色字白底），用户取过底色后不再自动跟随。
+            text_bg_color: AnnoColor::RED.auto_bg(),
+            bg_color_custom: false,
+            picker_for_bg: false,
             drag_text: None,
             drag_shape: None,
             hover_shape: false,
@@ -623,6 +695,69 @@ impl ImageViewer {
             })
     }
 
+    /// 底色块（操作排底色开关旁：显示当前底色 + hex，点击用取色器设置底色）。
+    fn bg_swatch(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        let c = self.text_bg_color.as_text_bg_rgpui();
+        div()
+            .id("viewer-bg-swatch")
+            .flex()
+            .items_center()
+            .gap_1()
+            .cursor_pointer()
+            .child(
+                div()
+                    .w(px(22.))
+                    .h(px(22.))
+                    .rounded_sm()
+                    .bg(c)
+                    .border_2()
+                    .border_color(if self.picker_for_bg && self.show_color_picker {
+                        rgb(0xFFFFFF)
+                    } else {
+                        rgb(0x3A3A3A)
+                    }),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0xCCCCCC))
+                    .child(self.text_bg_color.to_hex()),
+            )
+            .on_click(move |_, window, cx| {
+                view.update(cx, |this, cx| this.handle(ViewerAction::PickBg, window, cx));
+            })
+    }
+
+    /// 应用标注字色：未手动指定过底色时，底色跟随字色自适应（黑字不配黑底）。
+    fn apply_anno_color(&mut self, anno: AnnoColor) {
+        self.color = anno;
+        if !self.bg_color_custom {
+            self.text_bg_color = anno.auto_bg();
+        }
+    }
+
+    /// 应用文字底色：记为手动指定；编辑中靠提交落盘，未编辑直接写进最近一条并打开底色。
+    fn apply_bg_color(&mut self, anno: AnnoColor, cx: &mut Context<Self>) {
+        self.text_bg_color = anno;
+        self.bg_color_custom = true;
+        if self.text_editing.is_none()
+            && let Some(idx) = latest_text_index(&self.shapes)
+        {
+            if let Shape::Text { bg, bg_color, .. } = &mut self.shapes[idx] {
+                *bg_color = anno;
+                *bg = true;
+            }
+            self.text_bg = true;
+            self.redo_stack.clear();
+            // 底色已变更，后续 Esc / 关窗需提示保存。
+            self.dirty = true;
+            let msg = tr("viewer.bg_color_applied");
+            self.set_viewer_status(&msg, cx);
+        }
+        cx.notify();
+    }
+
     /// 工具条动作分发（按钮与快捷键共用）。
     fn handle(&mut self, action: ViewerAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
@@ -655,16 +790,41 @@ impl ImageViewer {
             ViewerAction::Undo => self.undo(cx),
             ViewerAction::Redo => self.redo(cx),
             ViewerAction::Color(color) => {
-                self.color = color;
+                self.apply_anno_color(color);
                 cx.notify();
             }
             ViewerAction::WidthNudge(delta) => self.nudge_width(delta, window, cx),
             ViewerAction::TextBg => {
+                // 按条独立，但保证每次点击都可见生效：
+                // 编辑中只翻本次提交用的开关（编辑框实时预览）；
+                // 未编辑则同步翻转最近一条文字的底色（旧文字互不影响），无文字时只切新建默认。
                 self.text_bg = !self.text_bg;
+                if self.text_editing.is_none()
+                    && let Some(idx) = latest_text_index(&self.shapes)
+                    && let Shape::Text { bg, .. } = &mut self.shapes[idx]
+                {
+                    *bg = self.text_bg;
+                    self.redo_stack.clear();
+                    // 底色已变更，后续 Esc / 关窗需提示保存。
+                    self.dirty = true;
+                    let msg = tr("viewer.text_bg_latest");
+                    self.set_viewer_status(&msg, cx);
+                } else if self.text_editing.is_none() {
+                    let msg = tr("viewer.text_bg_default");
+                    self.set_viewer_status(&msg, cx);
+                }
                 cx.notify();
             }
             ViewerAction::ToggleColorPicker => {
+                // 取色按钮固定是字色目标，底色走底色块。
+                self.picker_for_bg = false;
                 self.show_color_picker = !self.show_color_picker;
+                cx.notify();
+            }
+            ViewerAction::PickBg => {
+                // 底色块：取色器切到底色目标并展开，拖动实时改底色。
+                self.picker_for_bg = true;
+                self.show_color_picker = true;
                 cx.notify();
             }
             ViewerAction::OpenSavedFile => {
@@ -784,8 +944,13 @@ impl ImageViewer {
             .find_map(|(i, shape)| shape.bbox().contains(p).then_some(i))
     }
 
-    /// 左键按下：选择工具优先移动标注，空白处平移；其他工具开始绘制。
+    /// 左键按下：空格平移优先，选择工具优先移动标注，空白处平移；其他工具开始绘制。
     fn on_anno_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // 空格按住时左键拖拽一律平移，与当前工具无关（默认矩形下放大看图用）。
+        if self.space_held {
+            self.on_pan_down(ev, cx);
+            return;
+        }
         if self.tool == AnnoTool::Select {
             // 如果点中已有标注，选择工具用于移动标注；点空白处才平移图片。
             if let Some(p) = self.to_image(ev.position).filter(|p| self.in_image(*p))
@@ -847,10 +1012,16 @@ impl ImageViewer {
                     pos,
                     content,
                     color,
+                    bg,
+                    bg_color,
                     ..
                 } = old
                 {
                     self.color = color;
+                    // 开关与底色跟随该条文字的旧值，改完提交只影响这一条。
+                    self.text_bg = bg;
+                    self.text_bg_color = bg_color;
+                    self.bg_color_custom = true;
                     let input = cx.new(|cx| {
                         InputState::new(window, cx).placeholder(tr("viewer.text_placeholder"))
                     });
@@ -917,7 +1088,7 @@ impl ImageViewer {
         cx.notify();
     }
 
-    /// 鼠标移动：移动标注、Ctrl+拖动文字、选择工具平移、其他工具更新草稿。
+    /// 鼠标移动：移动标注、Ctrl+拖动文字、平移（选择 / 空格 / 中键）、其他工具更新草稿。
     fn on_anno_move(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
         // 橡皮擦拖动中：沿途删除命中的标注。
         if self.erasing {
@@ -964,21 +1135,22 @@ impl ImageViewer {
             cx.notify();
             return;
         }
-        // 选择工具：平移。
-        if self.tool == AnnoTool::Select {
-            // 未按下时仅更新悬停命中，用于显示“可移动标注”的鼠标形状。
-            if self.pan_last.is_none() {
-                let hover_shape = self
-                    .to_image(ev.position)
-                    .filter(|p| self.in_image(*p))
-                    .and_then(|p| self.hit_test_shape(p))
-                    .is_some();
-                if self.hover_shape != hover_shape {
-                    self.hover_shape = hover_shape;
-                    cx.notify();
-                }
-            }
+        // 平移中（选择工具空白拖拽 / 空格临时平移 / 中键拖拽）：按位移累加偏移，与工具无关。
+        if self.pan_last.is_some() {
             self.on_pan_move(ev, cx);
+            return;
+        }
+        // 选择工具：未按下时仅更新悬停命中，用于显示“可移动标注”的鼠标形状。
+        if self.tool == AnnoTool::Select {
+            let hover_shape = self
+                .to_image(ev.position)
+                .filter(|p| self.in_image(*p))
+                .and_then(|p| self.hit_test_shape(p))
+                .is_some();
+            if self.hover_shape != hover_shape {
+                self.hover_shape = hover_shape;
+                cx.notify();
+            }
             return;
         }
         let Some(anchor) = self.anchor else {
@@ -1006,7 +1178,7 @@ impl ImageViewer {
         cx.notify();
     }
 
-    /// 左键抬起：选择工具结束移动 / 平移，Ctrl+拖动文字结束，其他工具提交草稿。
+    /// 左键抬起：结束移动 / 平移（选择 / 空格 / 中键），Ctrl+拖动文字结束，其他工具提交草稿。
     fn on_anno_up(&mut self, cx: &mut Context<Self>) {
         // 橡皮擦拖动结束。
         if self.erasing {
@@ -1024,8 +1196,12 @@ impl ImageViewer {
             cx.notify();
             return;
         }
-        if self.tool == AnnoTool::Select {
+        // 平移结束（左键或中键发起的都在这里收尾，绘制草稿时 pan_last 为空，不影响提交）。
+        if self.pan_last.is_some() {
             self.on_pan_up(cx);
+            return;
+        }
+        if self.tool == AnnoTool::Select {
             return;
         }
         // 过小的图形视为误触，直接丢弃。
@@ -1080,6 +1256,9 @@ impl ImageViewer {
             content,
             color: self.color,
             size: DEFAULT_TEXT_SIZE,
+            // 提交时快照当前开关，新旧文字各自独立，之后再切开关不影响已提交的。
+            bg: self.text_bg,
+            bg_color: self.text_bg_color,
         };
         // 重新编辑时插回原位，否则追加到末尾。
         if let Some(idx) = editing.edit_index {
@@ -1305,6 +1484,11 @@ impl ImageViewer {
         self.pan_last = None;
         cx.notify();
     }
+}
+
+/// 找到最近一条文字标注的索引（底色开关未编辑时作用于它，保证每次点击可见生效）。
+fn latest_text_index(shapes: &[Shape]) -> Option<usize> {
+    shapes.iter().rposition(|s| matches!(s, Shape::Text { .. }))
 }
 
 /// 剪贴板缓存图片路径：保持文件存在，保证复制后资源管理器能异步读取。
@@ -1645,6 +1829,21 @@ impl Render for ImageViewer {
                     // [ / ] 步进调节线宽（与滑杆双向同步）。
                     "[" => this.handle(ViewerAction::WidthNudge(-1.0), window, cx),
                     "]" => this.handle(ViewerAction::WidthNudge(1.0), window, cx),
+                    // 空格按住平移（文字输入框里打空格时不拦截，留给输入法）。
+                    "space" if this.text_editing.is_none() => {
+                        if !this.space_held {
+                            this.space_held = true;
+                            cx.notify();
+                        }
+                    }
+                    // V / 1-8 切工具（文字输入中不拦截，避免打字跳工具）。
+                    "v" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8"
+                        if this.text_editing.is_none() =>
+                    {
+                        if let Some(tool) = AnnoTool::from_shortcut(ev.keystroke.key.as_str()) {
+                            this.handle(ViewerAction::Tool(tool), window, cx);
+                        }
+                    }
                     "z" if modi.control && !modi.shift => {
                         this.handle(ViewerAction::Undo, window, cx);
                     }
@@ -1655,6 +1854,14 @@ impl Render for ImageViewer {
                         this.handle(ViewerAction::Redo, window, cx);
                     }
                     _ => {}
+                }
+            }))
+            // 空格松开：结束临时平移（拖一半松空格也停，避免无空格平移继续跟手）。
+            .on_key_up(cx.listener(|this, ev: &KeyUpEvent, _window, cx| {
+                if ev.keystroke.key.as_str() == "space" && this.space_held {
+                    this.space_held = false;
+                    this.pan_last = None;
+                    cx.notify();
                 }
             }))
             // 操作排：查看缩放 + 撤销重做 + 线宽底色 + 文件操作（关闭走系统标题栏 / Esc）。
@@ -1720,6 +1927,8 @@ impl Render for ImageViewer {
                         ViewerAction::TextBg,
                         self.text_bg,
                     ))
+                    // 底色块：显示当前底色（半透明预览），点击用取色器设置底色。
+                    .child(self.bg_swatch(cx))
                     .child(self.bar_button(cx, tr("viewer.copy"), ViewerAction::Copy))
                     .child(self.bar_button(cx, tr("viewer.save"), ViewerAction::Save))
                     .child(
@@ -1882,33 +2091,44 @@ impl Render for ImageViewer {
                 let top = (self.area_h - dh) / 2.0 + self.offset.1;
                 let zoom = self.zoom;
                 let area = div().flex_1().relative().overflow_hidden();
-                let area = match self.tool {
-                    AnnoTool::Select => {
-                        if self.pan_last.is_some()
-                            || self.drag_text.is_some()
-                            || self.drag_shape.is_some()
-                        {
-                            area.cursor(CursorStyle::ClosedHand)
-                        } else if self.hover_shape || self.can_pan() {
-                            area.cursor(CursorStyle::OpenHand)
-                        } else {
-                            area.cursor(CursorStyle::Arrow)
+                // 平移中一律抓手；空格按住时预告可平移；其余按工具显示。
+                let area = if self.pan_last.is_some() {
+                    area.cursor(CursorStyle::ClosedHand)
+                } else if self.space_held {
+                    area.cursor(CursorStyle::OpenHand)
+                } else {
+                    match self.tool {
+                        AnnoTool::Select => {
+                            if self.drag_text.is_some() || self.drag_shape.is_some() {
+                                area.cursor(CursorStyle::ClosedHand)
+                            } else if self.hover_shape || self.can_pan() {
+                                area.cursor(CursorStyle::OpenHand)
+                            } else {
+                                area.cursor(CursorStyle::Arrow)
+                            }
                         }
+                        AnnoTool::Text => area.cursor(CursorStyle::IBeam),
+                        AnnoTool::Eraser => area.cursor(CursorStyle::PointingHand),
+                        AnnoTool::Rect
+                        | AnnoTool::Ellipse
+                        | AnnoTool::Arrow
+                        | AnnoTool::Pen
+                        | AnnoTool::Highlighter
+                        | AnnoTool::Mosaic => area.cursor(CursorStyle::Crosshair),
                     }
-                    AnnoTool::Text => area.cursor(CursorStyle::IBeam),
-                    AnnoTool::Eraser => area.cursor(CursorStyle::PointingHand),
-                    AnnoTool::Rect
-                    | AnnoTool::Ellipse
-                    | AnnoTool::Arrow
-                    | AnnoTool::Pen
-                    | AnnoTool::Highlighter
-                    | AnnoTool::Mosaic => area.cursor(CursorStyle::Crosshair),
                 };
                 let area = area
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                             this.on_anno_down(ev, window, cx);
+                        }),
+                    )
+                    // 中键拖拽平移（与工具无关，默认矩形下放大看图用）。
+                    .on_mouse_down(
+                        MouseButton::Middle,
+                        cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                            this.on_pan_down(ev, cx);
                         }),
                     )
                     .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
@@ -1924,6 +2144,18 @@ impl Render for ImageViewer {
                         MouseButton::Left,
                         cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
                             this.on_anno_up(cx);
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Middle,
+                        cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
+                            this.on_pan_up(cx);
+                        }),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Middle,
+                        cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
+                            this.on_pan_up(cx);
                         }),
                     )
                     .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _window, cx| {
@@ -1950,16 +2182,17 @@ impl Render for ImageViewer {
                         .relative()
                         // 底图。
                         .child(img(self.preview.path.clone()).w(px(dw)).h(px(dh)))
-                        // 文字标注层。
+                        // 文字标注层（每条独立底色，开关只决定新建默认值）。
                         .children({
                             let mut marks: Vec<Div> = Vec::new();
-                            let text_bg = self.text_bg;
                             for shape in &self.shapes {
                                 if let Shape::Text {
                                     pos,
                                     content,
                                     color,
                                     size,
+                                    bg,
+                                    bg_color,
                                 } = shape
                                 {
                                     let sz = size * zoom;
@@ -1973,41 +2206,38 @@ impl Render for ImageViewer {
                                         .text_color(color.to_rgpui())
                                         .text_size(px(sz))
                                         .child(content.clone());
-                                    if text_bg {
-                                        d = d.bg(Rgba {
-                                            r: 0.0,
-                                            g: 0.0,
-                                            b: 0.0,
-                                            a: 0.55,
-                                        });
+                                    // 按条底色：用该条自己的底色，透明度统一。
+                                    if *bg {
+                                        d = d.bg(bg_color.as_text_bg_rgpui());
                                     }
                                     marks.push(d);
                                 }
                             }
-                            // 正在编辑的 inline 输入框。
+                            // 正在编辑的 inline 输入框（所见即所得：底色跟随当前开关与底色）。
                             if let Some(editing) = &self.text_editing {
                                 let input_text_size = DEFAULT_TEXT_SIZE * zoom;
                                 let input_border = self.color.to_rgpui();
+                                let edit_bg = self.text_bg;
+                                let edit_color = self.color;
+                                let edit_bg_color = self.text_bg_color;
+                                let mut editor = div()
+                                    .absolute()
+                                    .left(px(editing.container_pos.0))
+                                    .top(px(editing.container_pos.1))
+                                    .min_w(px(180.0))
+                                    .max_w(px(400.0))
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_sm()
+                                    .border_1()
+                                    .border_color(input_border)
+                                    .text_color(edit_color.to_rgpui())
+                                    .text_size(px(input_text_size));
+                                if edit_bg {
+                                    editor = editor.bg(edit_bg_color.as_text_bg_rgpui());
+                                }
                                 marks.push(
-                                    div()
-                                        .absolute()
-                                        .left(px(editing.container_pos.0))
-                                        .top(px(editing.container_pos.1))
-                                        .min_w(px(180.0))
-                                        .max_w(px(400.0))
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_sm()
-                                        .border_1()
-                                        .border_color(input_border)
-                                        .bg(Rgba {
-                                            r: 0.0,
-                                            g: 0.0,
-                                            b: 0.0,
-                                            a: 0.78,
-                                        })
-                                        .text_color(rgb(0xFFFFFF))
-                                        .text_size(px(input_text_size))
+                                    editor
                                         // 阻止输入框点击冒泡到图片区，避免触发 commit + place。
                                         .on_mouse_down(
                                             MouseButton::Left,
@@ -2019,7 +2249,7 @@ impl Render for ImageViewer {
                                             Input::new(&editing.input)
                                                 .appearance(false)
                                                 .bordered(false)
-                                                .text_color(rgb(0xFFFFFF))
+                                                .text_color(edit_color.to_rgpui())
                                                 .text_size(px(input_text_size)),
                                         ),
                                 );
@@ -2085,6 +2315,19 @@ impl Render for ImageViewer {
                             )
                             .on_mouse_move(cx.listener(|_, _ev, _, cx| cx.stop_propagation()))
                             .on_scroll_wheel(cx.listener(|_, _ev, _, cx| cx.stop_propagation()))
+                            // 标题标明当前目标：字色还是底色，避免调错。
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_1()
+                                    .text_xs()
+                                    .text_color(rgb(0xCCCCCC))
+                                    .child(tr(if self.picker_for_bg {
+                                        "viewer.picker_bg"
+                                    } else {
+                                        "viewer.picker_fg"
+                                    })),
+                            )
                             .child(self.color_picker.clone()),
                     )
                 } else {
@@ -2324,5 +2567,47 @@ mod tests {
         assert_eq!(normalize_width(0.2), WIDTH_MIN);
         assert_eq!(normalize_width(4.6), 5.0);
         assert_eq!(normalize_width(99.0), WIDTH_MAX);
+    }
+
+    /// 快捷键映射：V 选择、1-8 按标注排顺序，其余返回 None。
+    #[test]
+    fn tool_shortcut_cases() {
+        assert_eq!(AnnoTool::from_shortcut("v"), Some(AnnoTool::Select));
+        assert_eq!(AnnoTool::from_shortcut("1"), Some(AnnoTool::Rect));
+        assert_eq!(AnnoTool::from_shortcut("8"), Some(AnnoTool::Text));
+        assert_eq!(AnnoTool::from_shortcut("9"), None);
+        assert_eq!(AnnoTool::from_shortcut("z"), None);
+    }
+
+    /// 最近文字索引：取最后一条文字，无文字返回 None（底色开关无文字时只切默认）。
+    #[test]
+    fn latest_text_index_cases() {
+        let shapes = vec![
+            Shape::Rect {
+                rect: PixelRect::new(0.0, 0.0, 10.0, 10.0),
+                color: AnnoColor::RED,
+                width: 2.0,
+            },
+            Shape::Text {
+                pos: (0.0, 0.0),
+                content: "旧".to_string(),
+                color: AnnoColor::WHITE,
+                size: 20.0,
+                bg: true,
+                bg_color: AnnoColor::BLACK,
+            },
+            Shape::Text {
+                pos: (5.0, 5.0),
+                content: "新".to_string(),
+                color: AnnoColor::BLACK,
+                size: 20.0,
+                bg: false,
+                bg_color: AnnoColor::WHITE,
+            },
+        ];
+        // 取最后一条文字，而不是第一条。
+        assert_eq!(latest_text_index(&shapes), Some(2));
+        assert_eq!(latest_text_index(&shapes[..1]), None);
+        assert_eq!(latest_text_index(&[]), None);
     }
 }
