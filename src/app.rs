@@ -733,23 +733,16 @@ impl RupixApp {
             .rounded_md()
             .bg(rgb(0xFFFFFF))
             .child(div().text_sm().child(tr("ocr.title")));
-        // 当前生效分三处：手动指定 / 默认目录（家族标签 + 所在目录），
-        // 内嵌（无外置也可识别，显示内置）；真缺模型才标红并给出期望目录。
+        // 当前生效只显示标签（手动指定 / 家族名 / 内置），文件夹本身不展示；
+        // 真缺模型才标红一行。
         match active {
-            Some((label, dir)) => {
-                card = card
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x555555))
-                            .child(tr_fmt("ocr.active", &[("label", &label)])),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x555555))
-                            .child(dir.display().to_string()),
-                    );
+            Some((label, _)) => {
+                card = card.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0x555555))
+                        .child(tr_fmt("ocr.active", &[("label", &label)])),
+                );
             }
             None if ocr::is_bundled() => {
                 card = card.child(
@@ -760,25 +753,17 @@ impl RupixApp {
                 );
             }
             None => {
-                card = card
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0xAA0000))
-                            .child(tr("ocr.missing")),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x555555))
-                            .child(ocr::models_hint().display().to_string()),
-                    );
+                card = card.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0xAA0000))
+                        .child(tr("ocr.missing")),
+                );
             }
         }
-        // 手动指定三行：文件名不做匹配，选啥是啥；未设置的行显示占位。
-        let (det, rec, keys) = ocr::custom_model_files()
-            .map(|(det, rec, keys)| (Some(det), Some(rec), Some(keys)))
-            .unwrap_or((None, None, None));
+        // 三行只展示文件：手动指定优先，否则用生效三件套的对应文件，
+        // 无生效模型就显示为空——默认文件夹本身不展示。
+        let (det, rec, keys) = ocr::effective_model_files();
         for (kind, current) in [
             (ModelFileKind::Det, det),
             (ModelFileKind::Rec, rec),

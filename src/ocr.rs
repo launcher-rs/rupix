@@ -217,7 +217,9 @@ fn candidate_dirs() -> Vec<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
         dirs.push(cwd.join("models"));
     }
-    // 4. 编译期包根兜底：仓库内提交的默认模型，绝对路径保证任意启动目录都能找到。
+    // 4. 包根兜底（仅调试构建）：仓库内提交的默认模型，方便 `cargo run` 开箱即用；
+    // 发版不带编译期固定路径，二进制拷到哪都不回头找本机包根。
+    #[cfg(debug_assertions)]
     dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/ocr-models"));
     // 去重（exe 目录恰好等于 cwd 等情况），保持优先级顺序。
     let mut seen = std::collections::HashSet::new();
@@ -359,26 +361,25 @@ fn resolve_external() -> Option<ResolvedModels> {
         .find_map(|dir| find_trio(&dir))
 }
 
-/// 当前实际生效的模型（标签 + 目录）：设置页展示与诊断用，无则返回 `None`。
+/// 当前实际生效的模型标签：设置页展示用，无则返回 `None`。
 pub fn active_models_info() -> Option<(String, PathBuf)> {
     resolve_external().map(|resolved| (resolved.label, resolved.dir))
 }
 
-/// 模型目录解析结果：外置命中则返回该目录，否则返回首选 hint 目录。
+/// 设置页展示的三文件（检测 / 识别 / 字典各一，缺位为 `None`）。
 ///
-/// 返回的目录不一定存在，调用方用 [`models_available`] 判断是否可用；
-/// 内嵌特性开启时即使外置缺失也可识别（走内存字节），见 [`engine`]。
-pub fn models_dir() -> PathBuf {
-    // 外置命中直接用，保证文案与实际加载一致。
-    if let Some(resolved) = resolve_external() {
-        return resolved.dir;
+/// 手动指定齐全就用它；否则用当前生效三件套的对应文件；
+/// 无生效模型就全空——默认文件夹本身不展示，只展示文件。
+pub fn effective_model_files() -> (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
+    // 手动指定优先：三文件齐全即整套采用。
+    if let Some((det, rec, keys)) = custom_model_files() {
+        return (Some(det), Some(rec), Some(keys));
     }
-    // 外置全缺：返回第一候选做 hint（环境变量显式指定时优先指到它）。
-    candidate_dirs()
-        .into_iter()
-        .next()
-        // 理论上候选恒非空（至少有包根兜底），这里防呆。
-        .unwrap_or_else(|| PathBuf::from("assets/ocr-models"))
+    // 其次用当前生效三件套（默认目录自动发现的结果）。
+    if let Some(resolved) = resolve_external() {
+        return (Some(resolved.det), Some(resolved.rec), Some(resolved.keys));
+    }
+    (None, None, None)
 }
 
 /// 是否内嵌构建（设置页展示用：无外置时也可用，不算缺模型）。
@@ -393,11 +394,6 @@ pub fn models_available() -> bool {
         return true;
     }
     resolve_external().is_some()
-}
-
-/// 缺模型时提示用户补齐的目录（与 [`models_dir`] 同源，保证文案与实际查找一致）。
-pub fn models_hint() -> PathBuf {
-    models_dir()
 }
 
 /// 全局 OCR 引擎：首次调用时加载模型，之后常驻复用。
