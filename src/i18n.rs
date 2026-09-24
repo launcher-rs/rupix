@@ -419,7 +419,7 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "Switched to {lang}"
             }
         }
-        // —— OCR 模型卡（通用 Tab） ——
+        // —— OCR 模型卡（OCR Tab） ——
         "ocr.title" => {
             if zh {
                 "OCR 模型（离线识别底图文字）"
