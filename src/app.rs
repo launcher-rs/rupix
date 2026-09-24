@@ -9,6 +9,7 @@ use crate::{
     capture::{begin_capture, begin_picker},
     hotkey::{HotkeyKind, apply_global_hotkey, hotkey_value_to_string, save_hotkey_string},
     i18n::{available_langs, lang, set_lang, tr, tr_fmt},
+    ocr,
     viewer::{open_viewer, preview_from_path},
 };
 use rgpui::{
@@ -353,6 +354,48 @@ impl RupixApp {
         .detach();
     }
 
+    /// 选择自定义 OCR 模型目录（原生目录对话框，三件套齐全才保存）。
+    fn pick_ocr_dir(&mut self, cx: &mut Context<Self>) {
+        // 原生目录对话框：只选单个已存在的目录。
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(tr("ocr.pick_prompt").into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(dir) = paths.into_iter().next() else {
+                return;
+            };
+            // 三件套不全不保存：避免存入不可用目录后识别静默走别的候选。
+            match ocr::check_dir(&dir) {
+                Ok(label) => {
+                    ocr::store_custom_models_dir(&dir);
+                    let _ = this.update(cx, |state, cx| {
+                        let msg = tr_fmt("ocr.saved", &[("label", &label)]);
+                        state.set_status(&msg, cx);
+                    });
+                }
+                Err(reason) => {
+                    let _ = this.update(cx, |state, cx| {
+                        let msg = tr_fmt("ocr.incomplete", &[("reason", &reason)]);
+                        state.set_status(&msg, cx);
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// 清除自定义 OCR 模型目录，恢复自动查找。
+    fn reset_ocr_dir(&mut self, cx: &mut Context<Self>) {
+        ocr::clear_custom_models_dir();
+        self.set_status(&tr("ocr.restored"), cx);
+    }
+
     /// 恢复系统默认保存目录（图片库优先）。
     fn reset_save_dir(&mut self, cx: &mut Context<Self>) {
         let dir = default_save_dir();
@@ -623,62 +666,174 @@ impl RupixApp {
         tab
     }
 
-    /// 通用 Tab：界面语言卡。
+    /// 通用 Tab 里的 OCR 模型卡：当前生效家族 + 自定义目录 + 选择 / 恢复按钮。
+    fn ocr_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        // 实时解析（环境变量变化即时体现，不缓存到视图状态）。
+        let active = ocr::active_models_info();
+        let custom = ocr::custom_models_dir();
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded_md()
+            .bg(rgb(0xFFFFFF))
+            .child(div().text_sm().child(tr("ocr.title")));
+        // 当前生效：家族标签 + 所在目录；无可用模型则标红并给出期望目录。
+        match active {
+            Some((label, dir)) => {
+                card = card
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x555555))
+                            .child(tr_fmt("ocr.active", &[("label", &label)])),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x555555))
+                            .child(dir.display().to_string()),
+                    );
+            }
+            None => {
+                card = card
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0xAA0000))
+                            .child(tr("ocr.missing")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x555555))
+                            .child(ocr::models_hint().display().to_string()),
+                    );
+            }
+        }
+        // 自定义情况：已选显示目录，未选说明跟随自动查找。
+        card = match custom {
+            Some(dir) => card.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x555555))
+                    .child(tr_fmt("ocr.custom", &[("dir", &dir.display().to_string())])),
+            ),
+            None => card.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x888888))
+                    .child(tr("ocr.auto")),
+            ),
+        };
+        card.child(
+            div()
+                .flex()
+                .gap_2()
+                .child({
+                    let v = view.clone();
+                    div()
+                        .id("rupix-btn-ocr-dir")
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .text_sm()
+                        .cursor_pointer()
+                        .bg(rgb(0x1E90FF))
+                        .text_color(rgb(0xFFFFFF))
+                        .child(tr("ocr.pick"))
+                        .on_click(move |_, _, cx| {
+                            v.update(cx, |this, cx| this.pick_ocr_dir(cx));
+                        })
+                })
+                .child({
+                    let v = view.clone();
+                    div()
+                        .id("rupix-btn-ocr-dir-reset")
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .text_sm()
+                        .cursor_pointer()
+                        .bg(rgb(0x888888))
+                        .text_color(rgb(0xFFFFFF))
+                        .child(tr("ocr.reset"))
+                        .on_click(move |_, _, cx| {
+                            v.update(cx, |this, cx| this.reset_ocr_dir(cx));
+                        })
+                }),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(0x888888))
+                .child(tr("ocr.note")),
+        )
+    }
+
+    /// 通用 Tab：界面语言卡 + OCR 模型卡。
     fn general_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let current = lang();
-        div().flex().flex_col().gap_3().child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .p_3()
-                .rounded_md()
-                .bg(rgb(0xFFFFFF))
-                .child(div().text_sm().child(tr("lang.title")))
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .children(available_langs().into_iter().map(|item| {
-                            let v = view.clone();
-                            let selected = item == current;
-                            let code = item.code();
-                            let name = item.display_name();
-                            div()
-                                .id(format!("rupix-lang-{code}"))
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .text_sm()
-                                .cursor_pointer()
-                                .bg(if selected {
-                                    rgb(0x1E90FF)
-                                } else {
-                                    rgb(0xEEEEEE)
-                                })
-                                .text_color(if selected {
-                                    rgb(0xFFFFFF)
-                                } else {
-                                    rgb(0x333333)
-                                })
-                                .child(name.clone())
-                                .on_click(move |_, _, cx| {
-                                    set_lang(&code);
-                                    v.update(cx, |this, cx| {
-                                        let msg = tr_fmt("lang.switched", &[("lang", &name)]);
-                                        this.set_status(&msg, cx);
-                                    });
-                                })
-                        })),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(0x888888))
-                        .child(tr("lang.note")),
-                ),
-        )
+        let lang_card = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded_md()
+            .bg(rgb(0xFFFFFF))
+            .child(div().text_sm().child(tr("lang.title")))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .children(available_langs().into_iter().map(|item| {
+                        let v = view.clone();
+                        let selected = item == current;
+                        let code = item.code();
+                        let name = item.display_name();
+                        div()
+                            .id(format!("rupix-lang-{code}"))
+                            .px_3()
+                            .py_1()
+                            .rounded_md()
+                            .text_sm()
+                            .cursor_pointer()
+                            .bg(if selected {
+                                rgb(0x1E90FF)
+                            } else {
+                                rgb(0xEEEEEE)
+                            })
+                            .text_color(if selected {
+                                rgb(0xFFFFFF)
+                            } else {
+                                rgb(0x333333)
+                            })
+                            .child(name.clone())
+                            .on_click(move |_, _, cx| {
+                                set_lang(&code);
+                                v.update(cx, |this, cx| {
+                                    let msg = tr_fmt("lang.switched", &[("lang", &name)]);
+                                    this.set_status(&msg, cx);
+                                });
+                            })
+                    })),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x888888))
+                    .child(tr("lang.note")),
+            );
+        // 语言卡 + OCR 模型卡上下排布，超高时由外层滚动容器接管。
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(lang_card)
+            .child(self.ocr_card(cx))
     }
 }
 

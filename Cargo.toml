@@ -32,6 +32,12 @@ ocr-rs = "2.4"
 # 调试面板透传：debug 构建默认启用检查器（F12）；
 # release 下默认剥离，如需保留用 `--features inspector` 显式开启。
 inspector = ["rgpui/inspector"]
+# OCR 模型内嵌：把 PP-OCRv5 mobile 三件套（约 21MB）用 include_bytes! 打进二进制，
+# 运行时零外部文件，开箱即用，适合发版安装包；
+# 默认关闭（外置加载，开发期迭代快、二进制小）。
+# 模型已进仓库（`assets/ocr-models/`），更新版本才需跑 `scripts/download-ocr-models.ps1`。
+# 用法：`cargo run --features bundled-ocr-models`。
+bundled-ocr-models = []
 
 # release 优化：截图工具常驻后台，启动速度与包体积优先。
 # 日常发版用 thin LTO（构建快）；打安装包用下面的 size 档（体积最小）。

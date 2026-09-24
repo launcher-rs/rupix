@@ -412,6 +412,91 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "Switched to {lang}"
             }
         }
+        // —— OCR 模型卡（通用 Tab） ——
+        "ocr.title" => {
+            if zh {
+                "OCR 模型（离线识别底图文字）"
+            } else {
+                "OCR models (offline text recognition)"
+            }
+        }
+        "ocr.active" => {
+            if zh {
+                "当前：{label}"
+            } else {
+                "Active: {label}"
+            }
+        }
+        "ocr.missing" => {
+            if zh {
+                "未找到可用模型，请选择目录或下载后重试"
+            } else {
+                "No usable models found, choose a folder or download them"
+            }
+        }
+        "ocr.custom" => {
+            if zh {
+                "自定义：{dir}"
+            } else {
+                "Custom: {dir}"
+            }
+        }
+        "ocr.auto" => {
+            if zh {
+                "未自定义，跟随自动查找"
+            } else {
+                "Not customized, auto-detect"
+            }
+        }
+        "ocr.pick" => {
+            if zh {
+                "选择目录…"
+            } else {
+                "Choose folder…"
+            }
+        }
+        "ocr.reset" => {
+            if zh {
+                "恢复默认"
+            } else {
+                "Reset"
+            }
+        }
+        "ocr.pick_prompt" => {
+            if zh {
+                "选择 OCR 模型目录（三件套：检测 / 识别 / 字典）"
+            } else {
+                "Choose OCR model folder (trio: det / rec / keys)"
+            }
+        }
+        "ocr.saved" => {
+            if zh {
+                "OCR 模型已切换：{label}"
+            } else {
+                "OCR models switched: {label}"
+            }
+        }
+        "ocr.restored" => {
+            if zh {
+                "OCR 模型已恢复自动查找"
+            } else {
+                "OCR models reset to auto-detect"
+            }
+        }
+        "ocr.incomplete" => {
+            if zh {
+                "目录不可用，未更改：{reason}"
+            } else {
+                "Folder unusable, unchanged: {reason}"
+            }
+        }
+        "ocr.note" => {
+            if zh {
+                "支持 PP-OCRv5/v6 等 ocr-rs 兼容三件套；内嵌包开箱即用，外置目录优先"
+            } else {
+                "Supports PP-OCRv5/v6 trios compatible with ocr-rs; bundled works out of the box, external folders win"
+            }
+        }
         // —— 截图入口与提示 ——
         "btn.region" => {
             if zh {
@@ -792,9 +877,9 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
         }
         "viewer.ocr_no_models" => {
             if zh {
-                "未找到 OCR 模型，请放入 {dir}"
+                "未找到 OCR 模型，请在设置 → 通用 → OCR 模型中选择目录（期望：{dir}）"
             } else {
-                "OCR models missing, place them in {dir}"
+                "OCR models missing, choose a folder in Settings → General → OCR models (want: {dir})"
             }
         }
         "viewer.ocr_fail" => {

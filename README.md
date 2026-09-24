@@ -98,6 +98,12 @@ cargo test
 > OCR 构建前提：本机需安装 LLVM（bindgen 要用 libclang）。
 > MSVC 头文件解析参数已由 `.cargo/config.toml` 自动带上，无需手动配环境变量；
 > 若 LLVM 不在默认路径，再另行设置 `LIBCLANG_PATH` 指向其 `bin` 目录（改完重开终端）。
+>
+> OCR 模型（PP-OCRv5 mobile 三件套，约 21MB）已进仓库（`assets/ocr-models/`），新 clone 开箱即用。
+> 查找顺序：`RUPIX_OCR_MODELS` 环境变量 > 设置页自定义目录 > exe 旁 `models/` > 工作目录 `models/`/`temp/ocr-models/` > 包根 `temp/`/`assets/`。
+> 设置 → 通用 → OCR 模型可指向任意 ocr-rs 兼容三件套（PP-OCRv5/v6 等，见 `src/ocr.rs` 的家族表），无需重编。
+> 更新模型版本才需跑：`powershell -ExecutionPolicy Bypass -File scripts/download-ocr-models.ps1`。
+> 发版想零外部文件：`cargo run --features bundled-ocr-models`（二进制 +21MB，外置模型仍优先覆盖）。
 
 ## 命令行截图
 
