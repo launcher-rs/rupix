@@ -101,7 +101,8 @@ cargo test
 >
 > OCR 模型（PP-OCRv5 mobile 三件套，约 21MB）已进仓库（`assets/ocr-models/`），新 clone 开箱即用。
 > 查找顺序：`RUPIX_OCR_MODELS` 环境变量 > 设置页自定义目录 > exe 旁 `models/` > 工作目录 `models/`/`temp/ocr-models/` > 包根 `temp/`/`assets/`。
-> 设置 → OCR 模型可指向任意 ocr-rs 兼容三件套（PP-OCRv5/v6 等，见 `src/ocr.rs` 的家族表），无需重编；缺模型时同页有下载指引（上游地址 + 一键命令，可复制）。
+> 设置 → OCR 模型可指向任意 ocr-rs 兼容三件套（PP-OCRv5/v6 等，见 `src/ocr.rs` 的家族表），无需重编；缺模型时同页有下载指引（两处地址 + 一键命令，均可复制）。
+> 模型默认下载位置二选一：ocr-rs 官方模型库（`https://github.com/zibo-chen/ocr-rs/tree/next/models`，全家在一个目录），或自有 HF 仓库（`https://huggingface.co/launcher-rs/rupix-models`，按家族分目录，推荐）。
 > 更新模型版本才需跑：`powershell -ExecutionPolicy Bypass -File scripts/download-ocr-models.ps1`。
 > 发版想零外部文件：`cargo run --features bundled-ocr-models`（二进制 +21MB，外置模型仍优先覆盖）。
 

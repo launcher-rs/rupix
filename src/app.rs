@@ -836,6 +836,31 @@ impl RupixApp {
                         view.clone(),
                     )),
             )
+            // 自有模型库行：地址文本 + 复制链接按钮。
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x555555))
+                    .child(tr("ocr.dl_hf")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x1E90FF))
+                            .child(ocr::HF_MODELS_URL.to_string()),
+                    )
+                    .child(copy_button(
+                        "rupix-btn-ocr-copy-hf",
+                        tr("ocr.copy"),
+                        ocr::HF_MODELS_URL.to_string(),
+                        view.clone(),
+                    )),
+            )
             // 一键命令行：命令文本 + 复制命令按钮。
             .child(
                 div()

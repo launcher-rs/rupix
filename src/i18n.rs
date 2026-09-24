@@ -528,9 +528,16 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
         }
         "ocr.dl_from" => {
             if zh {
-                "上游地址（ocr-rs 官方模型库，下载 det / rec / 字典三件套）："
+                "上游地址一（ocr-rs 官方模型库，下载 det / rec / 字典三件套）："
             } else {
-                "Upstream (official ocr-rs model repo, fetch the det / rec / keys trio):"
+                "Source 1 (official ocr-rs model repo, fetch the det / rec / keys trio):"
+            }
+        }
+        "ocr.dl_hf" => {
+            if zh {
+                "上游地址二（自有 HF 仓库，按家族分目录，推荐）："
+            } else {
+                "Source 2 (own HF repo, organized per family, recommended):"
             }
         }
         "ocr.dl_cmd" => {

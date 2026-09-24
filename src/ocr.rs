@@ -42,6 +42,8 @@ const KEYS_FILE: &str = "ppocr_keys_v5.txt";
 const MODELS_ENV: &str = "RUPIX_OCR_MODELS";
 /// 上游模型库地址（ocr-rs 官方 models 目录，设置页下载指引展示用）。
 pub const MODELS_UPSTREAM_URL: &str = "https://github.com/zibo-chen/ocr-rs/tree/next/models";
+/// 自有模型库地址（HF 全家族目录，设置页下载指引展示用）。
+pub const HF_MODELS_URL: &str = "https://huggingface.co/launcher-rs/rupix-models";
 /// 一键下载命令（仓库根下执行，设置页下载指引展示 / 复制用）。
 pub const DOWNLOAD_CMD: &str =
     "powershell -ExecutionPolicy Bypass -File scripts/download-ocr-models.ps1";
