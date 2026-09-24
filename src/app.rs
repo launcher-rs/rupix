@@ -733,7 +733,8 @@ impl RupixApp {
             .rounded_md()
             .bg(rgb(0xFFFFFF))
             .child(div().text_sm().child(tr("ocr.title")));
-        // 当前生效：家族标签 + 所在目录；无可用模型则标红并给出期望目录。
+        // 当前生效分三处：手动指定 / 默认目录（家族标签 + 所在目录），
+        // 内嵌（无外置也可识别，显示内置）；真缺模型才标红并给出期望目录。
         match active {
             Some((label, dir)) => {
                 card = card
@@ -749,6 +750,14 @@ impl RupixApp {
                             .text_color(rgb(0x555555))
                             .child(dir.display().to_string()),
                     );
+            }
+            None if ocr::is_bundled() => {
+                card = card.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0x555555))
+                        .child(tr_fmt("ocr.active", &[("label", &tr("ocr.bundled"))])),
+                );
             }
             None => {
                 card = card

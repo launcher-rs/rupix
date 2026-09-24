@@ -434,6 +434,13 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "Active: {label}"
             }
         }
+        "ocr.bundled" => {
+            if zh {
+                "内置模型"
+            } else {
+                "Bundled models"
+            }
+        }
         "ocr.missing" => {
             if zh {
                 "未找到可用模型，请手动指定三个文件后重试"

@@ -380,6 +380,11 @@ pub fn models_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("assets/ocr-models"))
 }
 
+/// 是否内嵌构建（设置页展示用：无外置时也可用，不算缺模型）。
+pub fn is_bundled() -> bool {
+    cfg!(feature = "bundled-ocr-models")
+}
+
 /// 模型是否可用：内嵌特性开启时恒为真（内存字节兜底），否则看外置三件套。
 pub fn models_available() -> bool {
     // 内嵌包自带模型，开箱即用，不再报“模型未找到”。
