@@ -99,7 +99,7 @@ cargo test
 > MSVC 头文件解析参数已由 `.cargo/config.toml` 自动带上，无需手动配环境变量；
 > 若 LLVM 不在默认路径，再另行设置 `LIBCLANG_PATH` 指向其 `bin` 目录（改完重开终端）。
 >
-> OCR 模型（PP-OCRv5 mobile 三件套，约 21MB）已进仓库（`assets/ocr-models/`），新 clone 开箱即用。
+> OCR 模型（PP-OCRv5 mobile 三件套，约 21MB）已进仓库（`assets/ocr-models/`），构建脚本会自动同步到输出目录旁的 `models/`（开发/发版默认位置，开箱即用）。
 > 查找顺序：`RUPIX_OCR_MODELS` 环境变量 > 设置页自定义目录 > exe 旁 `models/` > 工作目录 `models/`/`temp/ocr-models/` > 包根 `temp/`/`assets/`。
 > 设置 → OCR 模型可逐个指定检测 / 识别 / 字典三个文件（文件名不做匹配，换模型直接选文件即可）；未指定时按默认目录自动查找（PP-OCRv5/v6 等家族按名识别，见 `src/ocr.rs`）。
 > 模型下载位置二选一：ocr-rs 官方模型库（`https://github.com/zibo-chen/ocr-rs/tree/next/models`，全家在一个目录），或自有 HF 仓库（`https://huggingface.co/launcher-rs/rupix-models`，按家族分目录，推荐）。

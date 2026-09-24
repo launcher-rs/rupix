@@ -197,7 +197,8 @@ pub struct OcrLine {
 
 /// 外置模型候选目录（按优先级排序；手动指定的三个文件另走 [`custom_model_files`]，优先级更高）：
 /// 1. `RUPIX_OCR_MODELS` 环境变量（显式指定即尊重，即使目录缺失也排第一，方便报错指路）；
-/// 2. exe 旁 `models/`（发版形态：安装包把三件套放在程序旁边）；
+/// 2. exe 旁 `models/`（默认位置：构建脚本同步开发期模型到输出目录旁，
+///    发版时随安装包把 `models` 目录放 exe 旁即可）；
 /// 3. 当前工作目录下 `models/`（解压即用形态）；
 /// 4. 包根下 `assets/ocr-models/`（编译期绝对路径兜底：仓库内提交的默认模型）。
 fn candidate_dirs() -> Vec<PathBuf> {
