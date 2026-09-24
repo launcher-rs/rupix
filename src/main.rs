@@ -73,7 +73,7 @@ fn main() {
         let full_for_build = full_hotkey.clone();
         let picker_for_build = picker_hotkey.clone();
         // 三张热键卡片，默认窗口加高。
-        let bounds = Bounds::centered(None, size(px(560.), px(790.)), cx);
+        let bounds = Bounds::centered(None, size(px(560.), px(400.)), cx);
         let main_win: WindowHandle<RupixApp> = cx
             .open_window(
                 rgpui::WindowOptions {

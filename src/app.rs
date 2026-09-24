@@ -848,14 +848,17 @@ impl Render for RupixApp {
             .flex()
             .bg(rgb(0xF7F7F7))
             .text_color(rgb(0x333333))
-            // 左侧竖排 Tab 栏（固定宽不收缩）。
+            // 左侧竖排 Tab 栏（固定宽不收缩；窗口压矮时内部滚动而非裁掉）。
             .child(
                 div()
+                    .id("settings-tabs")
                     .flex()
                     .flex_col()
                     .gap_1()
                     .w(px(118.))
                     .flex_shrink_0()
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
                     .p_3()
                     .bg(rgb(0xFFFFFF))
                     .children(SettingsTab::all().into_iter().map(|item| {
@@ -894,19 +897,21 @@ impl Render for RupixApp {
                             })
                     })),
             )
-            // 右侧：标题 + 内容 + 状态栏（min_w(0) 允许收缩，长文本换行不撑宽）。
+            // 右侧：标题 + 可滚内容 + 状态栏（min_w(0) 允许收缩，长文本换行不撑宽）。
             .child(
                 div()
                     .flex_1()
                     .min_w(px(0.))
+                    .min_h(px(0.))
                     .overflow_hidden()
                     .flex()
                     .flex_col()
                     .gap_3()
                     .p_4()
-                    // 标题（设置窗口：平时隐藏到托盘）。
+                    // 标题（设置窗口：平时隐藏到托盘；固定不滚）。
                     .child(
                         div()
+                            .flex_shrink_0()
                             .flex()
                             .items_baseline()
                             .gap_2()
@@ -918,16 +923,25 @@ impl Render for RupixApp {
                                     .child(tr("app.subtitle")),
                             ),
                     )
-                    // Tab 内容区。
-                    .child(match tab {
-                        SettingsTab::Capture => self.capture_tab(cx).into_any_element(),
-                        SettingsTab::Hotkey => self.hotkey_tab(cx).into_any_element(),
-                        SettingsTab::Save => self.save_tab(cx).into_any_element(),
-                        SettingsTab::General => self.general_tab(cx).into_any_element(),
-                    })
-                    // 状态栏（常驻底部，各 Tab 操作反馈统一落这里）。
+                    // Tab 内容区：窗口压小时内部滚动，标题与状态栏保持可见。
                     .child(
                         div()
+                            .id("settings-content")
+                            .flex_1()
+                            .min_h(px(0.))
+                            .w_full()
+                            .overflow_y_scroll()
+                            .child(match tab {
+                                SettingsTab::Capture => self.capture_tab(cx).into_any_element(),
+                                SettingsTab::Hotkey => self.hotkey_tab(cx).into_any_element(),
+                                SettingsTab::Save => self.save_tab(cx).into_any_element(),
+                                SettingsTab::General => self.general_tab(cx).into_any_element(),
+                            }),
+                    )
+                    // 状态栏（常驻底部，各 Tab 操作反馈统一落这里；固定不滚）。
+                    .child(
+                        div()
+                            .flex_shrink_0()
                             .text_sm()
                             .text_color(rgb(0x555555))
                             .child(tr_fmt("app.status", &[("status", &status)])),
