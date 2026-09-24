@@ -119,7 +119,7 @@ pub struct PreviewImage {
     pub h: u32,
 }
 
-/// 设置页 Tab：截图（入口）、快捷键（录制）、保存（目录+最近）、通用（语言）。
+/// 设置页 Tab：截图（入口）、快捷键（录制）、保存（目录+最近）、OCR 模型（目录+下载）、通用（语言）。
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum SettingsTab {
     /// 截图：截图入口按钮。
@@ -129,6 +129,8 @@ enum SettingsTab {
     Hotkey,
     /// 保存：默认目录与最近保存。
     Save,
+    /// OCR 模型：自定义目录与下载指引。
+    Ocr,
     /// 通用：界面语言。
     General,
 }
@@ -140,6 +142,7 @@ impl SettingsTab {
             SettingsTab::Capture => "capture",
             SettingsTab::Hotkey => "hotkey",
             SettingsTab::Save => "save",
+            SettingsTab::Ocr => "ocr",
             SettingsTab::General => "general",
         }
     }
@@ -150,6 +153,7 @@ impl SettingsTab {
             SettingsTab::Capture => tr("tab.capture"),
             SettingsTab::Hotkey => tr("tab.hotkey"),
             SettingsTab::Save => tr("tab.save"),
+            SettingsTab::Ocr => tr("tab.ocr"),
             SettingsTab::General => tr("tab.general"),
         }
     }
@@ -159,17 +163,19 @@ impl SettingsTab {
         match id {
             "hotkey" => SettingsTab::Hotkey,
             "save" => SettingsTab::Save,
+            "ocr" => SettingsTab::Ocr,
             "general" => SettingsTab::General,
             _ => SettingsTab::Capture,
         }
     }
 
     /// 全部 Tab（左侧竖排栏顺序）。
-    fn all() -> [SettingsTab; 4] {
+    fn all() -> [SettingsTab; 5] {
         [
             SettingsTab::Capture,
             SettingsTab::Hotkey,
             SettingsTab::Save,
+            SettingsTab::Ocr,
             SettingsTab::General,
         ]
     }
@@ -206,7 +212,7 @@ pub struct RupixApp {
     picker_input: Entity<HotkeyInputState>,
     /// 状态栏文本。
     status: SharedString,
-    /// 设置页当前 Tab（截图 / 保存 / 通用）。
+    /// 设置页当前 Tab（截图 / 快捷键 / 保存 / OCR 模型 / 通用）。
     settings_tab: SettingsTab,
     /// 截图默认保存目录（截图后自动存原图到此，设置页可改）。
     save_dir: PathBuf,
@@ -666,7 +672,7 @@ impl RupixApp {
         tab
     }
 
-    /// 通用 Tab 里的 OCR 模型卡：当前生效家族 + 自定义目录 + 选择 / 恢复按钮。
+    /// OCR 模型 Tab 里的配置卡：当前生效家族 + 自定义目录 + 选择 / 恢复按钮。
     fn ocr_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         // 实时解析（环境变量变化即时体现，不缓存到视图状态）。
@@ -773,7 +779,107 @@ impl RupixApp {
         )
     }
 
-    /// 通用 Tab：界面语言卡 + OCR 模型卡。
+    /// OCR 模型 Tab 里的下载指引卡：上游地址 + 一键命令（均可复制）+ 三件套说明。
+    fn download_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        // 小按钮构造：文案 + 点击复制的文本，复制后状态栏反馈。
+        let copy_button =
+            |id: &'static str, label: String, text: String, view: Entity<RupixApp>| {
+                div()
+                    .id(id)
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_xs()
+                    .cursor_pointer()
+                    .bg(rgb(0xEEEEEE))
+                    .text_color(rgb(0x333333))
+                    .child(label)
+                    .on_click(move |_, _, cx| {
+                        let text = text.clone();
+                        view.update(cx, |this, cx| {
+                            cx.write_to_clipboard(rgpui::ClipboardItem::new_string(text));
+                            this.set_status(&tr("ocr.copied"), cx);
+                        });
+                    })
+            };
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded_md()
+            .bg(rgb(0xFFFFFF))
+            .child(div().text_sm().child(tr("ocr.dl_title")))
+            // 上游地址行：地址文本 + 复制链接按钮。
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x555555))
+                    .child(tr("ocr.dl_from")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x1E90FF))
+                            .child(ocr::MODELS_UPSTREAM_URL.to_string()),
+                    )
+                    .child(copy_button(
+                        "rupix-btn-ocr-copy-url",
+                        tr("ocr.copy"),
+                        ocr::MODELS_UPSTREAM_URL.to_string(),
+                        view.clone(),
+                    )),
+            )
+            // 一键命令行：命令文本 + 复制命令按钮。
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x555555))
+                    .child(tr("ocr.dl_cmd")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x333333))
+                            .child(ocr::DOWNLOAD_CMD.to_string()),
+                    )
+                    .child(copy_button(
+                        "rupix-btn-ocr-copy-cmd",
+                        tr("ocr.copy"),
+                        ocr::DOWNLOAD_CMD.to_string(),
+                        view.clone(),
+                    )),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x888888))
+                    .child(tr("ocr.dl_files")),
+            )
+    }
+
+    /// OCR 模型 Tab：配置卡（当前家族 + 自定义目录）+ 下载指引卡。
+    fn ocr_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(self.ocr_card(cx))
+            .child(self.download_card(cx))
+    }
+
+    /// 通用 Tab：界面语言卡。
     fn general_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let current = lang();
@@ -827,13 +933,8 @@ impl RupixApp {
                     .text_color(rgb(0x888888))
                     .child(tr("lang.note")),
             );
-        // 语言卡 + OCR 模型卡上下排布，超高时由外层滚动容器接管。
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(lang_card)
-            .child(self.ocr_card(cx))
+        // 通用 Tab 目前只有语言卡，直接返回（OCR 配置已独立成 Tab）。
+        lang_card
     }
 }
 
@@ -935,6 +1036,7 @@ impl Render for RupixApp {
                                 SettingsTab::Capture => self.capture_tab(cx).into_any_element(),
                                 SettingsTab::Hotkey => self.hotkey_tab(cx).into_any_element(),
                                 SettingsTab::Save => self.save_tab(cx).into_any_element(),
+                                SettingsTab::Ocr => self.ocr_tab(cx).into_any_element(),
                                 SettingsTab::General => self.general_tab(cx).into_any_element(),
                             }),
                     )

@@ -241,6 +241,13 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "Save"
             }
         }
+        "tab.ocr" => {
+            if zh {
+                "OCR 模型"
+            } else {
+                "OCR Models"
+            }
+        }
         "tab.general" => {
             if zh {
                 "通用"
@@ -495,6 +502,49 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "支持 PP-OCRv5/v6 等 ocr-rs 兼容三件套；内嵌包开箱即用，外置目录优先"
             } else {
                 "Supports PP-OCRv5/v6 trios compatible with ocr-rs; bundled works out of the box, external folders win"
+            }
+        }
+        "ocr.copied" => {
+            if zh {
+                "已复制到剪贴板"
+            } else {
+                "Copied to clipboard"
+            }
+        }
+        "ocr.copy" => {
+            if zh {
+                "复制"
+            } else {
+                "Copy"
+            }
+        }
+        // —— OCR 模型下载指引卡 ——
+        "ocr.dl_title" => {
+            if zh {
+                "模型下载（缺模型或想换版本时看这里）"
+            } else {
+                "Model download (for missing models or version switches)"
+            }
+        }
+        "ocr.dl_from" => {
+            if zh {
+                "上游地址（ocr-rs 官方模型库，下载 det / rec / 字典三件套）："
+            } else {
+                "Upstream (official ocr-rs model repo, fetch the det / rec / keys trio):"
+            }
+        }
+        "ocr.dl_cmd" => {
+            if zh {
+                "一键命令（仓库根下执行，同时填充开发与内嵌目录）："
+            } else {
+                "One-click command (run at repo root, fills dev and bundled folders):"
+            }
+        }
+        "ocr.dl_files" => {
+            if zh {
+                "默认用 PP-OCRv5 mobile（PP-OCRv5_mobile_det.mnn / PP-OCRv5_mobile_rec.mnn / ppocr_keys_v5.txt）；v6 small/medium/tiny、v4 及表外三件套放同一目录、设置里指向即可"
+            } else {
+                "Default is PP-OCRv5 mobile (PP-OCRv5_mobile_det.mnn / PP-OCRv5_mobile_rec.mnn / ppocr_keys_v5.txt); drop v6 small/medium/tiny, v4 or other trios in one folder and point settings at it"
             }
         }
         // —— 截图入口与提示 ——
@@ -877,9 +927,9 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
         }
         "viewer.ocr_no_models" => {
             if zh {
-                "未找到 OCR 模型，请在设置 → 通用 → OCR 模型中选择目录（期望：{dir}）"
+                "未找到 OCR 模型，请在设置 → OCR 模型中选择目录或下载（期望：{dir}）"
             } else {
-                "OCR models missing, choose a folder in Settings → General → OCR models (want: {dir})"
+                "OCR models missing, choose or download a folder in Settings → OCR Models (want: {dir})"
             }
         }
         "viewer.ocr_fail" => {

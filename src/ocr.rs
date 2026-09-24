@@ -40,6 +40,11 @@ const REC_MODEL: &str = "PP-OCRv5_mobile_rec.mnn";
 const KEYS_FILE: &str = "ppocr_keys_v5.txt";
 /// 环境变量覆盖模型目录（开发期切换模型版本用）。
 const MODELS_ENV: &str = "RUPIX_OCR_MODELS";
+/// 上游模型库地址（ocr-rs 官方 models 目录，设置页下载指引展示用）。
+pub const MODELS_UPSTREAM_URL: &str = "https://github.com/zibo-chen/ocr-rs/tree/next/models";
+/// 一键下载命令（仓库根下执行，设置页下载指引展示 / 复制用）。
+pub const DOWNLOAD_CMD: &str =
+    "powershell -ExecutionPolicy Bypass -File scripts/download-ocr-models.ps1";
 /// 设置页自定义模型目录的配置文件名（与程序放同一目录，参考保存目录配置）。
 const CUSTOM_DIR_FILE: &str = "rupix-ocrmodels.txt";
 
@@ -374,7 +379,7 @@ fn engine() -> anyhow::Result<&'static ocr_rs::OcrEngine> {
             .map(|dir| dir.display().to_string())
             .collect();
         anyhow::bail!(
-            "未找到 OCR 模型（已查找：{}）。请在设置 → 通用 → OCR 模型中选择目录，或用 RUPIX_OCR_MODELS 环境变量指定；发版可用 --features bundled-ocr-models 内嵌模型",
+            "未找到 OCR 模型（已查找：{}）。请在设置 → OCR 模型中选择目录或下载，或用 RUPIX_OCR_MODELS 环境变量指定；发版可用 --features bundled-ocr-models 内嵌模型",
             tried.join("；")
         );
     }
