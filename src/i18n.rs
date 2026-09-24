@@ -419,7 +419,7 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "Switched to {lang}"
             }
         }
-        // —— OCR 模型卡（通用 Tab） ——
+        // —— OCR 模型卡（OCR Tab） ——
         "ocr.title" => {
             if zh {
                 "OCR 模型（离线识别底图文字）"
@@ -436,30 +436,44 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
         }
         "ocr.missing" => {
             if zh {
-                "未找到可用模型，请选择目录或下载后重试"
+                "未找到可用模型，请手动指定三个文件后重试"
             } else {
-                "No usable models found, choose a folder or download them"
+                "No usable models found, specify the three files and retry"
             }
         }
-        "ocr.custom" => {
+        "ocr.file_det" => {
             if zh {
-                "自定义：{dir}"
+                "检测模型"
             } else {
-                "Custom: {dir}"
+                "Detection model"
             }
         }
-        "ocr.auto" => {
+        "ocr.file_rec" => {
             if zh {
-                "未自定义，跟随自动查找"
+                "识别模型"
             } else {
-                "Not customized, auto-detect"
+                "Recognition model"
             }
         }
-        "ocr.pick" => {
+        "ocr.file_keys" => {
             if zh {
-                "选择目录…"
+                "字符字典"
             } else {
-                "Choose folder…"
+                "Character dict"
+            }
+        }
+        "ocr.unset" => {
+            if zh {
+                "未设置"
+            } else {
+                "Not set"
+            }
+        }
+        "ocr.pick_file" => {
+            if zh {
+                "选择…"
+            } else {
+                "Choose…"
             }
         }
         "ocr.reset" => {
@@ -471,16 +485,23 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
         }
         "ocr.pick_prompt" => {
             if zh {
-                "选择 OCR 模型目录（三件套：检测 / 识别 / 字典）"
+                "选择 OCR 模型文件"
             } else {
-                "Choose OCR model folder (trio: det / rec / keys)"
+                "Choose OCR model file"
             }
         }
-        "ocr.saved" => {
+        "ocr.file_set" => {
             if zh {
-                "OCR 模型已切换：{label}"
+                "{label}已指定：{file}"
             } else {
-                "OCR models switched: {label}"
+                "{label} set: {file}"
+            }
+        }
+        "ocr.file_empty" => {
+            if zh {
+                "所选文件为空，未更改：{file}"
+            } else {
+                "Selected file is empty, unchanged: {file}"
             }
         }
         "ocr.restored" => {
@@ -490,18 +511,11 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "OCR models reset to auto-detect"
             }
         }
-        "ocr.incomplete" => {
-            if zh {
-                "目录不可用，未更改：{reason}"
-            } else {
-                "Folder unusable, unchanged: {reason}"
-            }
-        }
         "ocr.note" => {
             if zh {
-                "支持 PP-OCRv5/v6 等 ocr-rs 兼容三件套；内嵌包开箱即用，外置目录优先"
+                "文件名不做匹配，三个文件齐全即用；未指定时按默认目录自动查找"
             } else {
-                "Supports PP-OCRv5/v6 trios compatible with ocr-rs; bundled works out of the box, external folders win"
+                "File names are not matched, any complete trio works; auto-detect applies when unset"
             }
         }
         "ocr.copied" => {
@@ -934,9 +948,9 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
         }
         "viewer.ocr_no_models" => {
             if zh {
-                "未找到 OCR 模型，请在设置 → OCR 模型中选择目录或下载（期望：{dir}）"
+                "未找到 OCR 模型，请在设置 → OCR 模型中指定三个模型文件"
             } else {
-                "OCR models missing, choose or download a folder in Settings → OCR Models (want: {dir})"
+                "OCR models missing, specify the three files in Settings → OCR Models"
             }
         }
         "viewer.ocr_fail" => {

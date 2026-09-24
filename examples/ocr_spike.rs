@@ -1,6 +1,6 @@
 //! OCR 接入 spike：验证 ocr-rs（PP-OCRv5 mobile + MNN）在本机的构建与识别效果。
 //!
-//! - 模型放在 git 忽略的 `temp/ocr-models/`（det / rec / 字典三件套）；
+//! - 模型用仓库内提交的 `assets/ocr-models/`（det / rec / 字典三件套）；
 //! - 用法：`cargo run --example ocr_spike [图片路径...]`，默认跑 `temp/1.png` 与 `temp/22.png`；
 //! - 输出：引擎加载耗时、冷 / 热推理耗时、每行文本 + 置信度 + 文本框，
 //!   并用多线程并发识别验证 `OcrEngine` 是否 `Send + Sync`。
@@ -13,8 +13,8 @@ use std::time::Instant;
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont as _};
 use image::{Rgba, RgbaImage};
 
-/// 模型目录（相对包根目录，`cargo run --example` 的工作目录即包根）。
-const MODELS_DIR: &str = "temp/ocr-models";
+/// 模型目录（相对包根目录，`cargo run --example` 的工作目录即包根；仓库内提交的默认模型）。
+const MODELS_DIR: &str = "assets/ocr-models";
 /// spike 默认测试图（真实截图）。
 const DEFAULT_IMAGES: &[&str] = &["temp/1.png", "temp/22.png"];
 

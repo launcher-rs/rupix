@@ -1342,13 +1342,9 @@ impl ImageViewer {
             self.set_viewer_status(&msg, cx);
             return;
         }
-        // 模型缺失先指路，不进任务。
+        // 模型缺失只提醒，不进任务（去哪找模型见设置页）。
         if !ocr::models_available() {
-            let msg = tr_fmt(
-                "viewer.ocr_no_models",
-                &[("dir", &ocr::models_hint().display().to_string())],
-            );
-            self.set_viewer_status(&msg, cx);
+            self.set_viewer_status(&tr("viewer.ocr_no_models"), cx);
             return;
         }
         // 底图读内存（后台线程只传像素，不碰文件与视图）。

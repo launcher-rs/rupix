@@ -1,16 +1,15 @@
 //! OCR 模块：基于 ocr-rs（PP-OCRv5 mobile + MNN）的离线中英文识别。
 //!
-//! 双模式（编译期 feature 切换）：
-//! - 默认外置加载：在 [`candidate_dirs`] 列出的目录里找模型三件套，
-//!   缺失时调用方应提示用户补齐，而不是在这里 panic；
-//! - `--features bundled-ocr-models`：默认三件套用 `include_bytes!` 打进二进制，
-//!   运行时零外部文件，开箱即用（约 +21MB 体积），适合发版安装包。
-//!   即使开启内嵌，外置模型仍优先（方便不重编就换模型版本）。
+//! 三处来源（按优先级）：
+//! 1. 内嵌：`--features bundled-ocr-models` 把默认三件套打进二进制（约 +21MB），
+//!    开箱即用；默认关闭，外置优先。
+//! 2. 手动指定：设置页 OCR 模型中逐个指定检测 / 识别 / 字典三个文件，
+//!    文件名不做任何匹配，换模型直接选文件即可。
+//! 3. 默认目录：在 [`candidate_dirs`] 列出的目录里找模型三件套
+//!    （[`KNOWN_TRIOS`] 列出的家族按名识别，表外走通用兜底）。
 //!
-//! 多模型族：除默认 PP-OCRv5 mobile 外，[`KNOWN_TRIOS`] 列出的 ocr-rs 兼容家族
-//! （v6 small/medium/tiny、v4、v5 fp16）均可直接使用；名字不在表里的三件套
-//! 走通用兜底（目录内检测 / 识别 / 字典各恰好一个即认）。用户在设置页
-//! （通用 → OCR 模型）指定目录即可切换，无需重编。
+//! 缺失时调用方只管提示用户模型不存在，不 panic。
+//!
 //! - 引擎全局懒加载一次，多线程共享（`OcrEngine: Send + Sync` 已由 example 验证）；
 //! - [`recognize_image`] 是阻塞调用（单张大图约 0.6s），必须在后台线程跑，
 //!   前台直接调会卡死界面（见 viewer 的识别按钮）；
@@ -47,8 +46,8 @@ pub const HF_MODELS_URL: &str = "https://huggingface.co/launcher-rs/rupix-models
 /// 一键下载命令（仓库根下执行，设置页下载指引展示 / 复制用）。
 pub const DOWNLOAD_CMD: &str =
     "powershell -ExecutionPolicy Bypass -File scripts/download-ocr-models.ps1";
-/// 设置页自定义模型目录的配置文件名（与程序放同一目录，参考保存目录配置）。
-const CUSTOM_DIR_FILE: &str = "rupix-ocrmodels.txt";
+/// 设置页手动指定的三件套文件名（存程序旁的 `rupix-ocrfiles.txt`，三行各一）。
+const CUSTOM_FILES_FILE: &str = "rupix-ocrfiles.txt";
 
 /// 已知模型三件套（检测 / 识别 / 字典文件名 + 家族标签），按优先级排序。
 ///
@@ -86,6 +85,74 @@ const KNOWN_TRIOS: &[(&str, &str, &str, &str)] = &[
         "ch_PP-OCRv4_rec_infer.mnn",
         "ppocr_keys_v4.txt",
         "PP-OCRv4",
+    ),
+    // 小语种：与默认共用检测模型，识别模型与字典按语种区分
+    // （自有 HF 仓库 `ocr/pp-ocrv5-<语种>/` 目录即按此结构存放）。
+    (
+        DET_MODEL,
+        "arabic_PP-OCRv5_mobile_rec_infer.mnn",
+        "ppocr_keys_arabic.txt",
+        "PP-OCRv5 阿拉伯语",
+    ),
+    (
+        DET_MODEL,
+        "cyrillic_PP-OCRv5_mobile_rec_infer.mnn",
+        "ppocr_keys_cyrillic.txt",
+        "PP-OCRv5 西里尔语",
+    ),
+    (
+        DET_MODEL,
+        "devanagari_PP-OCRv5_mobile_rec_infer.mnn",
+        "ppocr_keys_devanagari.txt",
+        "PP-OCRv5 天城文",
+    ),
+    (
+        DET_MODEL,
+        "el_PP-OCRv5_mobile_rec_infer.mnn",
+        "ppocr_keys_el.txt",
+        "PP-OCRv5 希腊语",
+    ),
+    (
+        DET_MODEL,
+        "en_PP-OCRv5_mobile_rec_infer.mnn",
+        "ppocr_keys_en.txt",
+        "PP-OCRv5 英语",
+    ),
+    (
+        DET_MODEL,
+        "eslav_PP-OCRv5_mobile_rec_infer.mnn",
+        "ppocr_keys_eslav.txt",
+        "PP-OCRv5 东斯拉夫语",
+    ),
+    (
+        DET_MODEL,
+        "korean_PP-OCRv5_mobile_rec_infer.mnn",
+        "ppocr_keys_korean.txt",
+        "PP-OCRv5 韩语",
+    ),
+    (
+        DET_MODEL,
+        "latin_PP-OCRv5_mobile_rec_infer.mnn",
+        "ppocr_keys_latin.txt",
+        "PP-OCRv5 拉丁语",
+    ),
+    (
+        DET_MODEL,
+        "ta_PP-OCRv5_mobile_rec_infer.mnn",
+        "ppocr_keys_ta.txt",
+        "PP-OCRv5 泰米尔语",
+    ),
+    (
+        DET_MODEL,
+        "te_PP-OCRv5_mobile_rec_infer.mnn",
+        "ppocr_keys_te.txt",
+        "PP-OCRv5 泰卢固语",
+    ),
+    (
+        DET_MODEL,
+        "th_PP-OCRv5_mobile_rec_infer.mnn",
+        "ppocr_keys_th.txt",
+        "PP-OCRv5 泰语",
     ),
 ];
 
@@ -128,80 +195,87 @@ pub struct OcrLine {
     pub rect: PixelRect,
 }
 
-/// 外置模型候选目录（按优先级排序）：
-///
+/// 外置模型候选目录（按优先级排序；手动指定的三个文件另走 [`custom_model_files`]，优先级更高）：
 /// 1. `RUPIX_OCR_MODELS` 环境变量（显式指定即尊重，即使目录缺失也排第一，方便报错指路）；
-/// 2. 设置页自定义目录（持久化在程序旁）；
-/// 3. exe 旁 `models/`（发版形态：安装包把三件套放在程序旁边）；
-/// 4. 当前工作目录下 `models/`（解压即用形态）；
-/// 5. 当前工作目录下 `temp/ocr-models/`（开发期相对路径，`cargo run` 时 cwd 即包根）；
-/// 6. 包根下 `temp/ocr-models/` 与 `assets/ocr-models/`（编译期绝对路径兜底：
-///    前者覆盖开发期下载，后者是仓库内提交的默认模型，新 clone 开箱即用）。
+/// 2. exe 旁 `models/`（发版形态：安装包把三件套放在程序旁边）；
+/// 3. 当前工作目录下 `models/`（解压即用形态）；
+/// 4. 包根下 `assets/ocr-models/`（编译期绝对路径兜底：仓库内提交的默认模型）。
 fn candidate_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     // 1. 环境变量优先，方便开发期切换模型版本；缺失也保留用于报错指路。
     if let Some(dir) = std::env::var_os(MODELS_ENV).map(PathBuf::from) {
         dirs.push(dir);
     }
-    // 2. 设置页自定义次之：用户显式选择，优先于自动发现的位置。
-    if let Some(dir) = custom_models_dir() {
-        dirs.push(dir);
-    }
-    // 3. 发版形态：模型随安装包放在 exe 旁的 models 目录。
+    // 2. 发版形态：模型随安装包放在 exe 旁的 models 目录。
     if let Ok(exe) = std::env::current_exe()
         && let Some(parent) = exe.parent()
     {
         dirs.push(parent.join("models"));
     }
-    // 4–5. 当前工作目录下的两种常见布局。
+    // 3. 当前工作目录下的解压即用布局。
     if let Ok(cwd) = std::env::current_dir() {
         dirs.push(cwd.join("models"));
-        dirs.push(cwd.join("temp").join("ocr-models"));
     }
-    // 6. 编译期包根兜底：安装后从任意目录启动时相对路径会失效，
-    // 用绝对路径保证开发期下载与仓库内置模型都能被找到。
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    dirs.push(manifest.join("temp/ocr-models"));
-    dirs.push(manifest.join("assets/ocr-models"));
+    // 4. 编译期包根兜底：仓库内提交的默认模型，绝对路径保证任意启动目录都能找到。
+    dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/ocr-models"));
     // 去重（exe 目录恰好等于 cwd 等情况），保持优先级顺序。
     let mut seen = std::collections::HashSet::new();
     dirs.retain(|dir| seen.insert(dir.clone()));
     dirs
 }
 
-/// 设置页自定义的模型目录（持久化在程序旁的 `rupix-ocrmodels.txt`，参考保存目录配置）。
+/// 设置页手动指定的三件套文件（检测 / 识别 / 字典各一，存程序旁配置文件）。
 ///
-/// 返回 `None` 表示用户未自定义，走自动查找；目录被删后也视为未自定义。
-pub fn custom_models_dir() -> Option<PathBuf> {
-    // 配置与程序放在同一目录，重装也不会丢；目录被删则回退自动查找。
-    std::env::current_exe()
+/// 三行分别是检测 / 识别 / 字典的绝对路径；任一行缺失或文件不可用即视为未指定，
+/// 回退自动查找。文件名不做任何匹配，叫什么都能用。
+pub fn custom_model_files() -> Option<(PathBuf, PathBuf, PathBuf)> {
+    // 配置与程序放在同一目录，重装也不会丢；文件被删则回退自动查找。
+    let text = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(CUSTOM_DIR_FILE)))
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .map(|text| PathBuf::from(text.trim()))
-        .filter(|dir| !dir.as_os_str().is_empty() && dir.is_dir())
+        .and_then(|exe| exe.parent().map(|dir| dir.join(CUSTOM_FILES_FILE)))
+        .and_then(|path| std::fs::read_to_string(path).ok())?;
+    let mut lines = text.lines();
+    let file = |line: Option<&str>| {
+        line.map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+    };
+    match (file(lines.next()), file(lines.next()), file(lines.next())) {
+        (Some(det), Some(rec), Some(keys)) => Some((det, rec, keys)),
+        _ => None,
+    }
 }
 
-/// 持久化设置页自定义的模型目录（写入失败仅忽略，不阻断流程）。
-///
-/// 调用方应先用 [`check_dir`] 确认三件套齐全再存，避免存入不可用目录。
-pub fn store_custom_models_dir(dir: &Path) {
+/// 持久化手动指定的三件套文件（None 表示该项未设置，写入失败仅忽略）。
+pub fn store_custom_model_files(det: Option<&Path>, rec: Option<&Path>, keys: Option<&Path>) {
     // 优先放在程序所在目录，极端情况回退到系统临时目录。
     let path = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(CUSTOM_DIR_FILE)))
-        .unwrap_or_else(|| std::env::temp_dir().join(CUSTOM_DIR_FILE));
-    let _ = std::fs::write(path, dir.to_string_lossy().as_ref());
+        .and_then(|exe| exe.parent().map(|dir| dir.join(CUSTOM_FILES_FILE)))
+        .unwrap_or_else(|| std::env::temp_dir().join(CUSTOM_FILES_FILE));
+    let line = |item: Option<&Path>| {
+        item.map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let text = format!("{}\n{}\n{}\n", line(det), line(rec), line(keys));
+    let _ = std::fs::write(path, text);
 }
 
-/// 清除自定义模型目录，恢复自动查找（文件缺失也视为成功）。
-pub fn clear_custom_models_dir() {
+/// 清除手动指定的三件套，恢复自动查找（文件缺失也视为成功）。
+pub fn clear_custom_model_files() {
     // 按写入时的同优先级定位，删不到就当已清除。
     let path = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(CUSTOM_DIR_FILE)))
-        .unwrap_or_else(|| std::env::temp_dir().join(CUSTOM_DIR_FILE));
+        .and_then(|exe| exe.parent().map(|dir| dir.join(CUSTOM_FILES_FILE)))
+        .unwrap_or_else(|| std::env::temp_dir().join(CUSTOM_FILES_FILE));
     let _ = std::fs::remove_file(path);
+}
+
+/// 文件可用（存在且非空）：设置页选文件时过滤占位空文件用。
+pub fn is_usable_file(path: &Path) -> bool {
+    // 元数据读不到按不可用处理。
+    path.is_file() && path.metadata().map(|meta| meta.len() > 0).unwrap_or(false)
 }
 
 /// 在指定目录里找一套完整三件套：先按 [`KNOWN_TRIOS`] 匹配已知家族，
@@ -260,20 +334,24 @@ fn find_trio(dir: &Path) -> Option<ResolvedModels> {
     None
 }
 
-/// 校验用户选中的目录：完整返回家族标签，缺失返回人类可读的原因（设置页展示用）。
-pub fn check_dir(dir: &Path) -> Result<String, String> {
-    // 目录本身不可用时直接说明，不再往下找三件套。
-    if !dir.is_dir() {
-        return Err("目录不存在或不可访问".to_string());
-    }
-    match find_trio(dir) {
-        Some(resolved) => Ok(resolved.label),
-        None => Err("缺少完整三件套（检测 / 识别 / 字典各一）".to_string()),
-    }
-}
-
-/// 在候选目录里找第一套可用的外置模型（目录 + 家族，无则返回 `None`）。
+/// 在候选位置找第一套可用的外置模型（文件 + 家族，无则返回 `None`）。
+///
+/// 手动指定的三个文件优先（文件名不做匹配，换模型不用搬文件），
+/// 其次按目录优先级自动发现。
 fn resolve_external() -> Option<ResolvedModels> {
+    // 手动指定优先：三文件齐全即用，标签固定便于设置页展示。
+    if let Some((det, rec, keys)) = custom_model_files() {
+        return Some(ResolvedModels {
+            dir: det
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(".")),
+            det,
+            rec,
+            keys,
+            label: "手动指定".to_string(),
+        });
+    }
     candidate_dirs()
         .into_iter()
         .filter(|dir| dir.is_dir())
@@ -299,7 +377,7 @@ pub fn models_dir() -> PathBuf {
         .into_iter()
         .next()
         // 理论上候选恒非空（至少有包根兜底），这里防呆。
-        .unwrap_or_else(|| PathBuf::from("temp/ocr-models"))
+        .unwrap_or_else(|| PathBuf::from("assets/ocr-models"))
 }
 
 /// 模型是否可用：内嵌特性开启时恒为真（内存字节兜底），否则看外置三件套。
@@ -374,14 +452,13 @@ fn engine() -> anyhow::Result<&'static ocr_rs::OcrEngine> {
     }
     #[cfg(not(feature = "bundled-ocr-models"))]
     {
-        // 非内嵌包且外置全缺：把查过的位置和补救命令一起告诉用户，
-        // 新 clone 开箱即知去哪下载，而不是一句干巴巴的“模型未找到”。
+        // 非内嵌包且外置全缺：只提醒模型不存在（去哪找模型见设置页）。
         let tried: Vec<String> = candidate_dirs()
             .iter()
             .map(|dir| dir.display().to_string())
             .collect();
         anyhow::bail!(
-            "未找到 OCR 模型（已查找：{}）。请在设置 → OCR 模型中选择目录或下载，或用 RUPIX_OCR_MODELS 环境变量指定；发版可用 --features bundled-ocr-models 内嵌模型",
+            "未找到 OCR 模型（已查找：{}）。请在设置 → OCR 模型中指定三个模型文件，或用 RUPIX_OCR_MODELS 环境变量指定目录",
             tried.join("；")
         );
     }
@@ -552,6 +629,17 @@ mod tests {
         let custom = root.join("custom");
         touch(&custom, &["foo_det.mnn", "foo_rec.mnn", "foo_keys.txt"]);
         assert_eq!(find_trio(&custom).unwrap().label, "自定义组合");
+        // 小语种：文件名全不一样，表内命中带出家族名。
+        let latin = root.join("latin");
+        touch(
+            &latin,
+            &[
+                DET_MODEL,
+                "latin_PP-OCRv5_mobile_rec_infer.mnn",
+                "ppocr_keys_latin.txt",
+            ],
+        );
+        assert_eq!(find_trio(&latin).unwrap().label, "PP-OCRv5 拉丁语");
         // 缺字典：只有两件，不认。
         let partial = root.join("partial");
         touch(&partial, &["foo_det.mnn", "foo_rec.mnn"]);

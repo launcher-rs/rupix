@@ -181,6 +181,42 @@ impl SettingsTab {
     }
 }
 
+/// 模型文件种类（设置页三行各一，文件名不做任何匹配，叫什么都能用）。
+#[derive(Clone, Copy)]
+enum ModelFileKind {
+    /// 检测模型（找文本框）。
+    Det,
+    /// 识别模型（认框里文字）。
+    Rec,
+    /// 字符字典（识别结果查字表）。
+    Keys,
+}
+
+impl ModelFileKind {
+    /// 行显示文案（跟随当前语言）。
+    fn label(self) -> String {
+        match self {
+            ModelFileKind::Det => tr("ocr.file_det"),
+            ModelFileKind::Rec => tr("ocr.file_rec"),
+            ModelFileKind::Keys => tr("ocr.file_keys"),
+        }
+    }
+
+    /// 行按钮 id 后缀（保证唯一）。
+    fn id(self) -> &'static str {
+        match self {
+            ModelFileKind::Det => "det",
+            ModelFileKind::Rec => "rec",
+            ModelFileKind::Keys => "keys",
+        }
+    }
+
+    /// 三种文件共用同一个选择提示。
+    fn prompt_key(self) -> &'static str {
+        "ocr.pick_prompt"
+    }
+}
+
 /// 截图入口动作（设置页截图 Tab 的四个按钮共用分发）。
 #[derive(Clone, Copy)]
 enum EntryAction {
@@ -360,45 +396,57 @@ impl RupixApp {
         .detach();
     }
 
-    /// 选择自定义 OCR 模型目录（原生目录对话框，三件套齐全才保存）。
-    fn pick_ocr_dir(&mut self, cx: &mut Context<Self>) {
-        // 原生目录对话框：只选单个已存在的目录。
+    /// 模型文件种类（设置页三行各一，文件名不做任何匹配）。
+    fn pick_model_file(&mut self, kind: ModelFileKind, cx: &mut Context<Self>) {
+        // 原生文件对话框：只选单个已存在的文件。
         let receiver = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
+            files: true,
+            directories: false,
             multiple: false,
-            prompt: Some(tr("ocr.pick_prompt").into()),
+            prompt: Some(tr(kind.prompt_key()).into()),
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else {
                 return;
             };
-            let Some(dir) = paths.into_iter().next() else {
+            let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            // 三件套不全不保存：避免存入不可用目录后识别静默走别的候选。
-            match ocr::check_dir(&dir) {
-                Ok(label) => {
-                    ocr::store_custom_models_dir(&dir);
-                    let _ = this.update(cx, |state, cx| {
-                        let msg = tr_fmt("ocr.saved", &[("label", &label)]);
-                        state.set_status(&msg, cx);
-                    });
-                }
-                Err(reason) => {
-                    let _ = this.update(cx, |state, cx| {
-                        let msg = tr_fmt("ocr.incomplete", &[("reason", &reason)]);
-                        state.set_status(&msg, cx);
-                    });
-                }
+            // 空文件直接拒收（占位或没下完），其他照单全收。
+            if !ocr::is_usable_file(&path) {
+                let _ = this.update(cx, |state, cx| {
+                    let msg = tr_fmt("ocr.file_empty", &[("file", &path.display().to_string())]);
+                    state.set_status(&msg, cx);
+                });
+                return;
             }
+            let _ = this.update(cx, |state, cx| {
+                // 读出现有两项，换掉这一项后整体存回。
+                let (mut det, mut rec, mut keys) = ocr::custom_model_files()
+                    .map(|(det, rec, keys)| (Some(det), Some(rec), Some(keys)))
+                    .unwrap_or((None, None, None));
+                match kind {
+                    ModelFileKind::Det => det = Some(path.clone()),
+                    ModelFileKind::Rec => rec = Some(path.clone()),
+                    ModelFileKind::Keys => keys = Some(path.clone()),
+                }
+                ocr::store_custom_model_files(det.as_deref(), rec.as_deref(), keys.as_deref());
+                let msg = tr_fmt(
+                    "ocr.file_set",
+                    &[
+                        ("label", &kind.label()),
+                        ("file", &path.display().to_string()),
+                    ],
+                );
+                state.set_status(&msg, cx);
+            });
         })
         .detach();
     }
 
-    /// 清除自定义 OCR 模型目录，恢复自动查找。
-    fn reset_ocr_dir(&mut self, cx: &mut Context<Self>) {
-        ocr::clear_custom_models_dir();
+    /// 清除手动指定的三个文件，恢复自动查找。
+    fn reset_model_files(&mut self, cx: &mut Context<Self>) {
+        ocr::clear_custom_model_files();
         self.set_status(&tr("ocr.restored"), cx);
     }
 
@@ -672,12 +720,11 @@ impl RupixApp {
         tab
     }
 
-    /// OCR 模型 Tab 里的配置卡：当前生效家族 + 自定义目录 + 选择 / 恢复按钮。
+    /// OCR 模型 Tab 里的配置卡：当前生效 + 手动指定的三个文件（各行选文件）。
     fn ocr_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         // 实时解析（环境变量变化即时体现，不缓存到视图状态）。
         let active = ocr::active_models_info();
-        let custom = ocr::custom_models_dir();
         let mut card = div()
             .flex()
             .flex_col()
@@ -719,58 +766,74 @@ impl RupixApp {
                     );
             }
         }
-        // 自定义情况：已选显示目录，未选说明跟随自动查找。
-        card = match custom {
-            Some(dir) => card.child(
+        // 手动指定三行：文件名不做匹配，选啥是啥；未设置的行显示占位。
+        let (det, rec, keys) = ocr::custom_model_files()
+            .map(|(det, rec, keys)| (Some(det), Some(rec), Some(keys)))
+            .unwrap_or((None, None, None));
+        for (kind, current) in [
+            (ModelFileKind::Det, det),
+            (ModelFileKind::Rec, rec),
+            (ModelFileKind::Keys, keys),
+        ] {
+            let v = view.clone();
+            let shown = current
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| tr("ocr.unset"));
+            card = card.child(
                 div()
-                    .text_xs()
-                    .text_color(rgb(0x555555))
-                    .child(tr_fmt("ocr.custom", &[("dir", &dir.display().to_string())])),
-            ),
-            None => card.child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(0x888888))
-                    .child(tr("ocr.auto")),
-            ),
-        };
-        card.child(
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(rgb(0x333333))
+                            .child(kind.label()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .text_xs()
+                            .text_color(rgb(0x555555))
+                            .child(shown),
+                    )
+                    .child(
+                        div()
+                            .id(format!("rupix-btn-ocr-file-{}", kind.id()))
+                            .flex_shrink_0()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_xs()
+                            .cursor_pointer()
+                            .bg(rgb(0x1E90FF))
+                            .text_color(rgb(0xFFFFFF))
+                            .child(tr("ocr.pick_file"))
+                            .on_click(move |_, _, cx| {
+                                v.update(cx, |this, cx| this.pick_model_file(kind, cx));
+                            }),
+                    ),
+            );
+        }
+        card.child(div().flex().gap_2().child({
+            let v = view.clone();
             div()
-                .flex()
-                .gap_2()
-                .child({
-                    let v = view.clone();
-                    div()
-                        .id("rupix-btn-ocr-dir")
-                        .px_3()
-                        .py_1()
-                        .rounded_md()
-                        .text_sm()
-                        .cursor_pointer()
-                        .bg(rgb(0x1E90FF))
-                        .text_color(rgb(0xFFFFFF))
-                        .child(tr("ocr.pick"))
-                        .on_click(move |_, _, cx| {
-                            v.update(cx, |this, cx| this.pick_ocr_dir(cx));
-                        })
+                .id("rupix-btn-ocr-files-reset")
+                .px_3()
+                .py_1()
+                .rounded_md()
+                .text_sm()
+                .cursor_pointer()
+                .bg(rgb(0x888888))
+                .text_color(rgb(0xFFFFFF))
+                .child(tr("ocr.reset"))
+                .on_click(move |_, _, cx| {
+                    v.update(cx, |this, cx| this.reset_model_files(cx));
                 })
-                .child({
-                    let v = view.clone();
-                    div()
-                        .id("rupix-btn-ocr-dir-reset")
-                        .px_3()
-                        .py_1()
-                        .rounded_md()
-                        .text_sm()
-                        .cursor_pointer()
-                        .bg(rgb(0x888888))
-                        .text_color(rgb(0xFFFFFF))
-                        .child(tr("ocr.reset"))
-                        .on_click(move |_, _, cx| {
-                            v.update(cx, |this, cx| this.reset_ocr_dir(cx));
-                        })
-                }),
-        )
+        }))
         .child(
             div()
                 .text_xs()
