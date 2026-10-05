@@ -1,4 +1,4 @@
-# 手动发布 Release：Actions 页点 Run workflow，填 tag 与 profile 即可。
+# 手动发布滚动 Release（固定 tag `latest`，每次触发删旧建新、附件原名替换，不带版本号）。
 # 仅 workflow_dispatch，不自动触发。Windows 必须编过；Linux/macOS 尽力而为，挂了不阻塞发版。
 # 每平台两个包（对齐 0.1 手动发版）：常规版（exe + 外置 models/）与内嵌版（--features bundled-ocr-models，开箱即用）。
 name: release
@@ -6,11 +6,6 @@ name: release
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Release tag（如 v0.2.0；留空则取 Cargo.toml version 加 v 前缀）'
-        required: false
-        default: ''
-        type: string
       profile:
         description: '编译档'
         required: false
@@ -163,33 +158,27 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: 解析 tag 并按发版命名改名
-        id: tag
+      - name: 删旧 latest，重建滚动 Release
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            tag='${{ inputs.tag }}'
-          else
-            v=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
-            tag="v$v"
-          fi
-          echo "value=$tag" >> "$GITHUB_OUTPUT"
-          # rupix-<平台>[-bundled].zip → rupix-<tag>-<平台>[-bundled].zip（对齐 0.1 命名）。
-          for f in dist/*; do
-            base=$(basename "$f")
-            mv "$f" "dist/$(echo "$base" | sed -E "s/^rupix-/rupix-$tag-/")"
-          done
+          # 同名附件直接上传会冲突，先删整个旧 Release（含 tag），再全新发布。
+          gh release delete latest --cleanup-tag -y || true
           ls dist/
 
       - name: 发布到 GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.value }}
+          tag_name: latest
+          name: 最新构建（手动触发，滚动更新）
           files: dist/*
           body: |
             编译档：`${{ inputs.profile }}`（size 体积最小，release 速度优先）；Windows 静态 CRT，免装运行库。
 
-            每个平台两个包（对齐 0.1）：常规版 `rupix-<版本>-<平台>.zip`（exe + 外置 `models/`，解压即用，目录不要挪动）；
+            滚动更新：每次手动触发都会删旧建新，附件原名替换，不保留历史版本。
+
+            每个平台两个包：常规版 `rupix-<平台>.zip`（exe + 外置 `models/`，解压即用，目录不要挪动）；
             内嵌版 `*-bundled.zip`（模型打进二进制，单文件开箱即用，体积 +21MB）。
 
             说明：Windows 为主力验证平台；Linux/macOS 为交叉尝试编译，未在真机完整验证，遇到问题欢迎提 Issue。
