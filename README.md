@@ -134,7 +134,11 @@ cargo build --profile size
 
 ## 发版（GitHub Actions，手动触发）
 
-不自动触发。去仓库 **Actions → release → Run workflow**，选 `profile`（默认 `size`）点运行即可。发的是固定 `latest` 滚动 Release，不带版本号，每次触发删旧建新、附件原名替换：
+不自动触发。去仓库 **Actions → release → Run workflow**，选 `profile`（默认 `size`）和 `platform`（默认全平台），点运行即可。发的是固定 `latest` 滚动 Release，不带版本号：
+
+- 全平台触发时删旧建新；单选某平台时只替换该平台附件，可单独重编失败的平台。
+- 各平台编完即传，不互相等待：Windows/macOS 先好先能下载，不用等 Linux。
+- 每个平台两个包：常规版 `rupix-<平台>.zip`（exe + 外置 `models/`，解压即用）与内嵌版 `*-bundled.zip`（`--features bundled-ocr-models`，单文件开箱即用，体积 +21MB）。
 
 - 矩阵：`windows-x86_64` / `linux-x86_64` / `macos-aarch64`；Windows 必须编过，Linux/macOS 只是尝试编译（本机无设备验证），挂了不阻塞发版。
 - 每个平台两个包：常规版 `rupix-<平台>.zip`（exe + 外置 `models/`，解压即用）与内嵌版 `*-bundled.zip`（`--features bundled-ocr-models`，单文件开箱即用，体积 +21MB）。
