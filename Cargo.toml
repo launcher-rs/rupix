@@ -5,9 +5,8 @@ edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
-# 本地 rgpui 源码：截图能力需要开启 screen-capture 特性。
-rgpui = { git="https://github.com/launcher-rs/rgpui.git", features = ["screen-capture"] }
-rgpui-platform = { git="https://github.com/launcher-rs/rgpui.git", features = ["screen-capture"] }
+rgpui = { version = "1.4.0", features = ["screen-capture"] }
+rgpui-platform = { version = "1.4.0", features = ["screen-capture"] }
 # 图片编解码与像素操作：首帧保存、选区裁剪、马赛克、导出 PNG。
 # 只开常用格式：全默认会经特性统一把 avif（rav1e 整套编码器）/ tiff / exr 等
 # 重新引入，抵消 rgpui 的体积裁剪；冷门格式在“打开图片编辑”时报不支持。
