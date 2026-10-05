@@ -24,10 +24,27 @@ permissions:
 
 jobs:
   # 先建好空 Release，各平台 job 只管往里传附件：早编完早发布，不用等最慢的。
+  # 顺带按 platform 输入算出本次要跑的矩阵（job 级 if 不支持 matrix，只能走 outputs 动态矩阵）。
   prepare:
     name: 准备 rolling Release
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
+      - name: 算本次矩阵
+        id: set-matrix
+        shell: bash
+        run: |
+          win='{"id":"windows","os":"windows-latest","name":"windows-x86_64","best-effort":false}'
+          lin='{"id":"linux","os":"ubuntu-latest","name":"linux-x86_64","best-effort":true}'
+          mac='{"id":"macos","os":"macos-latest","name":"macos-aarch64","best-effort":true}'
+          case "${{ inputs.platform }}" in
+            windows) m="[$win]" ;;
+            linux) m="[$lin]" ;;
+            macos) m="[$mac]" ;;
+            *) m="[$win,$lin,$mac]" ;;
+          esac
+          echo "matrix=$m" >> "$GITHUB_OUTPUT"
       - name: 建空 latest
         shell: bash
         env:
@@ -49,27 +66,13 @@ jobs:
   build:
     name: build (${{ matrix.name }})
     needs: prepare
-    # 单选平台时只跑对应 job：某平台失败后单独重编它即可，不用整单重来。
-    if: ${{ inputs.platform == 'all' || inputs.platform == matrix.id }}
     runs-on: ${{ matrix.os }}
     # Linux/macOS 只是尝试编译：本机无对应设备验证，挂了也不阻塞其他平台发版。
     continue-on-error: ${{ matrix.best-effort }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - id: windows
-            os: windows-latest
-            name: windows-x86_64
-            best-effort: false
-          - id: linux
-            os: ubuntu-latest
-            name: linux-x86_64
-            best-effort: true
-          - id: macos
-            os: macos-latest
-            name: macos-aarch64
-            best-effort: true
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
