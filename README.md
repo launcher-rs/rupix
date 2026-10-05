@@ -30,7 +30,7 @@
 - [x] 双全局热键扩展为四热键（区域 / 全屏 / 取色 / 窗口各一个，设置页录制，失焦可用，默认 `Ctrl+Shift+A` / `Ctrl+Shift+F` / `Ctrl+Shift+P` / `Ctrl+Shift+W`）
 - [x] 托盘常驻（启动即隐藏到托盘：区域截图 / 全屏截图 / 屏幕取色 / 窗口截图 / 打开图片编辑 / 打开设置 / 退出）
 - [x] 命令行截图（`rupix -f` 全屏 / `rupix -r x,y,w,h` 区域，直存 PNG，可 `--copy` 进剪贴板）
-- [ ] OCR 文字识别
+- [x] OCR 文字识别（离线 PP-OCRv5 mobile，中英文；预览窗口点「识别」，后台识别不卡界面，结果进面板可复制文本 / 落为文字标注，需备好模型三件套）
 
 ## 技术栈
 
@@ -44,6 +44,7 @@ Rust + rgpui + rgpui-platform
 | `rgpui-platform`  | 跨平台窗口 / 事件支持         |
 | `image`           | 图片编解码、裁剪与导出        |
 | `ab_glyph`        | 文字标注的字形光栅化          |
+| `ocr-rs`           | 离线 OCR（PP-OCRv5 mobile + MNN，中英文识别） |
 | `windows`         | Windows 双格式剪贴板（图片+文件） |
 | `embed-resource`  | Windows exe 图标嵌入（构建依赖） |
 
@@ -76,18 +77,18 @@ rupix/
 
 ## 快速开始
 
+> 注意：`cargo run` 是 debug 构建，未开优化，截图（冻结帧采集 / 渲染）会非常卡，仅用于快速验证逻辑。
+> 日常使用 / 体验请务必用 release 构建（见下节「编译」）。
+
 ```bash
 # rupix 目录下执行
-cargo run              # 本地运行（启动即隐藏到托盘，用快捷键截图）
+cargo run              # 本地运行（启动即隐藏到托盘，用快捷键截图；debug 很卡，慎用）
 
 # 命令行截图（不启动图形界面，可与托盘进程并存）
 cargo run -- -f                          # 全屏截图，自动保存到默认目录
 cargo run -- -f -o D:\shot.png           # 全屏截图，保存到指定文件
 cargo run -- -r 100,200,800,600 -o a.png # 区域截图（虚拟屏幕物理像素）
 cargo run -- --help                      # 查看全部参数
-
-# 构建 release（已配 opt-level=3 / LTO / strip）
-cargo build --release
 
 # 代码检查（提交前必须通过）
 cargo fmt --check
@@ -105,6 +106,55 @@ cargo test
 > 模型下载位置二选一：ocr-rs 官方模型库（`https://github.com/zibo-chen/ocr-rs/tree/next/models`，全家在一个目录），或自有 HF 仓库（`https://huggingface.co/launcher-rs/rupix-models`，按家族分目录，推荐）。
 > 更新模型版本才需跑：`powershell -ExecutionPolicy Bypass -File scripts/download-ocr-models.ps1`。
 > 发版想零外部文件：`cargo run --features bundled-ocr-models`（二进制 +21MB，外置模型仍优先覆盖）。
+
+## 编译
+
+```bash
+# 日常使用 / 发版：速度优先（opt-level=3 + thin LTO + strip），构建较快
+cargo build --release
+./target/release/rupix
+
+# 打安装包：体积最小（opt-level=z + fat LTO + strip），构建更慢
+cargo build --profile size
+./target/size/rupix
+```
+
+说明：
+
+- 不要用 `cargo run` 日常截图：debug 构建无优化，冻结帧采集与渲染会非常卡。
+- `release` 是默认推荐；`size` 仅用于打安装包，日常开发继续用 `release`。
+- 如需保留调试面板（F12 检查器），release 下显式开启：`cargo build --release --features inspector`。
+
+> 为什么 debug 会非常卡？
+> `cargo run` 默认是 debug 构建（`opt-level=0`，无内联 / 无自动向量化，保留 `debug-assertions` + `overflow-checks`，无 LTO）；
+> 而 `release` 开了 `opt-level=3 + thin LTO + codegen-units=1`（见 `Cargo.toml`）。
+> Rupix 的主链路恰好全是 debug 最怕的 CPU 密集像素运算：
+> 一张 4K 冻结帧约 33MB，要走推流取帧 → PNG 落盘 → 解码（debug 下单次约半秒）→ RGBA→BGRA 逐像素转换 → 全屏浮层渲染 → 裁剪 / 马赛克 / 烧录导出。
+> 这些循环在无优化下每个像素都有边界检查与函数调用开销，也无法向量化，比 release 慢一到两个数量级，所以拖拽选区、放大镜、取色都会掉帧。只用 `cargo run` 验证逻辑，体验务必用 release 包。
+
+## 发版（GitHub Actions，手动触发）
+
+不自动触发。去仓库 **Actions → release → Run workflow**，填 `tag`（如 `v0.2.0`，留空则取 `Cargo.toml` 版本加 `v` 前缀）与 `profile`（默认 `size`），CI 会编译并发布到 GitHub Releases：
+
+- 矩阵：`windows-x86_64` / `linux-x86_64` / `macos-aarch64`；Windows 必须编过，Linux/macOS 只是尝试编译（本机无设备验证），挂了不阻塞发版。
+- 每个平台两个包（对齐 0.1）：常规版 `rupix-<版本>-<平台>.zip`（exe + 外置 `models/`，解压即用）与内嵌版 `*-bundled.zip`（`--features bundled-ocr-models`，单文件开箱即用，体积 +21MB）。
+- 常规包的 `models/` 由构建脚本自动从 `assets/ocr-models/` 分发；找不到模型时该平台只出内嵌包并告警。
+
+## OCR 文字识别
+
+预览窗口点「识别」，后台线程跑离线识别（前台不卡），完成后：
+
+- 结果进右侧面板：点行可定位高亮并复制该行文本，也可一键复制全部；
+- 确认无误再点「落为标注」，识别行转为文字标注（之后可像普通标注一样移动 / 删除）；
+- 识别中重复点击会提示「识别中，请稍候」，不会重复开任务。
+
+模型三件套（约 21MB，需自行准备）：`PP-OCRv5_mobile_det.mnn` / `PP-OCRv5_mobile_rec.mnn` / `ppocr_keys_v5.txt`，查找优先级：
+
+1. 环境变量 `RUPIX_OCR_MODELS` 指向的目录；
+2. 发版形态：exe 旁的 `models/` 目录；
+3. 开发期：包根下 `temp/ocr-models/`（git 忽略）。
+
+缺模型时点「识别」会提示应放入的目录，补齐后重试即可（引擎首次加载后常驻复用）。
 
 ## 命令行截图
 
