@@ -1,6 +1,6 @@
-# 手动发布滚动 Release（固定 tag `latest`，每次触发删旧建新、附件原名替换，不带版本号）。
-# 仅 workflow_dispatch，不自动触发。Windows 必须编过；Linux/macOS 尽力而为，挂了不阻塞发版。
-# 每平台两个包（对齐 0.1 手动发版）：常规版（exe + 外置 models/）与内嵌版（--features bundled-ocr-models，开箱即用）。
+# 手动发布滚动 Release（固定 tag `latest`；全平台触发删旧建新，单平台触发只替换该平台附件）。
+# 仅 workflow_dispatch，不自动触发。各平台编完即传附件，互不等待；Windows 必过，Linux/macOS 尽力而为。
+# 每平台两个包：常规版（exe + 外置 models/）与内嵌版（--features bundled-ocr-models，开箱即用）。
 name: release
 
 on:
@@ -12,27 +12,62 @@ on:
         default: 'size'
         type: choice
         options: [size, release]
+      platform:
+        description: '编译平台（单选某平台可单独重编，不碰其他平台附件）'
+        required: false
+        default: 'all'
+        type: choice
+        options: [all, windows, linux, macos]
 
 permissions:
   contents: write
 
 jobs:
+  # 先建好空 Release，各平台 job 只管往里传附件：早编完早发布，不用等最慢的。
+  prepare:
+    name: 准备 rolling Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: 建空 latest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ inputs.platform }}" = "all" ]; then
+            # 同名附件直接上传会冲突，全平台触发时删旧建新；单平台触发跳过，保留其他平台附件。
+            gh release delete latest --cleanup-tag -y || true
+          fi
+          if ! gh release view latest >/dev/null 2>&1; then
+            gh release create latest --title "最新构建（手动触发，滚动更新）" --notes ""
+          fi
+          gh release edit latest --title "最新构建（手动触发，滚动更新）" --notes "编译档：${{ inputs.profile }}（size 体积最小，release 速度优先）；Windows 静态 CRT，免装运行库。
+
+          滚动更新：全平台触发删旧建新；单平台触发只替换该平台附件，不碰其他的。
+          每个平台两个包：常规版 rupix-<平台>.zip（exe + 外置 models/，解压即用）；内嵌版 *-bundled.zip（模型打进二进制，单文件开箱即用，体积 +21MB）。
+          说明：Windows 为主力验证平台；Linux/macOS 为交叉尝试编译，未在真机完整验证，遇到问题欢迎提 Issue。"
+
   build:
     name: build (${{ matrix.name }})
+    needs: prepare
+    # 单选平台时只跑对应 job：某平台失败后单独重编它即可，不用整单重来。
+    if: ${{ inputs.platform == 'all' || inputs.platform == matrix.id }}
     runs-on: ${{ matrix.os }}
-    # Linux/macOS 只是尝试编译：本机无对应设备验证，挂了也不阻塞 Windows 发版。
+    # Linux/macOS 只是尝试编译：本机无对应设备验证，挂了也不阻塞其他平台发版。
     continue-on-error: ${{ matrix.best-effort }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
+          - id: windows
+            os: windows-latest
             name: windows-x86_64
             best-effort: false
-          - os: ubuntu-latest
+          - id: linux
+            os: ubuntu-latest
             name: linux-x86_64
             best-effort: true
-          - os: macos-latest
+          - id: macos
+            os: macos-latest
             name: macos-aarch64
             best-effort: true
     steps:
@@ -54,14 +89,17 @@ jobs:
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
       # rgpui Linux 后端要 Wayland/X11 开发库，bindgen 要 libclang。
+      # 注意：libclang 解压约 300MB，这步要几分钟，不是卡死；--no-install-recommends 已砍掉附带推荐包。
+      # build-essential / pkg-config / gcc 是 runner 自带，不重复装；clang 编译器本体不需要（bindgen 只用 libclang.so）。
       - name: 安装系统依赖（Linux）
         if: runner.os == 'Linux'
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang libclang-dev pkg-config \
-            libwayland-dev libxkbcommon-dev libx11-dev libxcb1-dev \
+          sudo apt-get install -y --no-install-recommends libclang-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libx11-xcb-dev libxcb1-dev \
             libasound2-dev libudev-dev
+      # 注：-lX11-xcb 由 libx11-xcb-dev 提供（CI 曾在此 link 失败）；libxkbcommon-x11-dev 同属 X11 链接组，提前备好免得再跑一轮。
 
       # macOS 用 brew 的 llvm 提供 libclang（Xcode 自带的不一定被 bindgen 找到）。
       - name: 安装 LLVM（macOS）
@@ -133,52 +171,17 @@ jobs:
           tar -czf "dist/rupix-${{ matrix.name }}.tar.gz" -C stage-regular .
           tar -czf "dist/rupix-${{ matrix.name }}-bundled.tar.gz" -C stage-bundled .
 
-      - name: 上传构建产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ matrix.name }}
-          # 只上传压缩包，中间目录不进 Release 附件。
-          path: |
-            dist/*.zip
-            dist/*.tar.gz
-          if-no-files-found: warn
+      # 本平台编完立刻上传（--clobber 覆盖同名旧附件，支持单独重跑本 job）。
+      - name: 发布附件（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload latest dist/*.zip --clobber
 
-  publish:
-    name: 发布 Release
-    # Windows 挂了整体 result 就是 failure，发版自动跳过；Linux/macOS 尽力而为不影响。
-    needs: build
-    if: needs.build.result == 'success'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: dist-*
-          merge-multiple: true
-          path: dist
-
-      - name: 删旧 latest，重建滚动 Release
+      - name: 发布附件（Linux/macOS）
+        if: runner.os != 'Windows'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          # 同名附件直接上传会冲突，先删整个旧 Release（含 tag），再全新发布。
-          gh release delete latest --cleanup-tag -y || true
-          ls dist/
-
-      - name: 发布到 GitHub Releases
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: 最新构建（手动触发，滚动更新）
-          files: dist/*
-          body: |
-            编译档：`${{ inputs.profile }}`（size 体积最小，release 速度优先）；Windows 静态 CRT，免装运行库。
-
-            滚动更新：每次手动触发都会删旧建新，附件原名替换，不保留历史版本。
-
-            每个平台两个包：常规版 `rupix-<平台>.zip`（exe + 外置 `models/`，解压即用，目录不要挪动）；
-            内嵌版 `*-bundled.zip`（模型打进二进制，单文件开箱即用，体积 +21MB）。
-
-            说明：Windows 为主力验证平台；Linux/macOS 为交叉尝试编译，未在真机完整验证，遇到问题欢迎提 Issue。
+        run: gh release upload latest dist/*.tar.gz --clobber
