@@ -134,10 +134,10 @@ cargo build --profile size
 
 ## 发版（GitHub Actions，手动触发）
 
-不自动触发。去仓库 **Actions → release → Run workflow**，填 `tag`（如 `v0.2.0`，留空则取 `Cargo.toml` 版本加 `v` 前缀）与 `profile`（默认 `size`），CI 会编译并发布到 GitHub Releases：
+不自动触发。去仓库 **Actions → release → Run workflow**，选 `profile`（默认 `size`）点运行即可。发的是固定 `latest` 滚动 Release，不带版本号，每次触发删旧建新、附件原名替换：
 
 - 矩阵：`windows-x86_64` / `linux-x86_64` / `macos-aarch64`；Windows 必须编过，Linux/macOS 只是尝试编译（本机无设备验证），挂了不阻塞发版。
-- 每个平台两个包（对齐 0.1）：常规版 `rupix-<版本>-<平台>.zip`（exe + 外置 `models/`，解压即用）与内嵌版 `*-bundled.zip`（`--features bundled-ocr-models`，单文件开箱即用，体积 +21MB）。
+- 每个平台两个包：常规版 `rupix-<平台>.zip`（exe + 外置 `models/`，解压即用）与内嵌版 `*-bundled.zip`（`--features bundled-ocr-models`，单文件开箱即用，体积 +21MB）。
 - 常规包的 `models/` 由构建脚本自动从 `assets/ocr-models/` 分发；找不到模型时该平台只出内嵌包并告警。
 
 ## OCR 文字识别
