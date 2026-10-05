@@ -1,0 +1,195 @@
+# 手动发布 Release：Actions 页点 Run workflow，填 tag 与 profile 即可。
+# 仅 workflow_dispatch，不自动触发。Windows 必须编过；Linux/macOS 尽力而为，挂了不阻塞发版。
+# 每平台两个包（对齐 0.1 手动发版）：常规版（exe + 外置 models/）与内嵌版（--features bundled-ocr-models，开箱即用）。
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag（如 v0.2.0；留空则取 Cargo.toml version 加 v 前缀）'
+        required: false
+        default: ''
+        type: string
+      profile:
+        description: '编译档'
+        required: false
+        default: 'size'
+        type: choice
+        options: [size, release]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    # Linux/macOS 只是尝试编译：本机无对应设备验证，挂了也不阻塞 Windows 发版。
+    continue-on-error: ${{ matrix.best-effort }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x86_64
+            best-effort: false
+          - os: ubuntu-latest
+            name: linux-x86_64
+            best-effort: true
+          - os: macos-latest
+            name: macos-aarch64
+            best-effort: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # ocr-rs 经 bindgen 要用 libclang，Windows runner 默认没有，装一份 LLVM。
+      - name: 安装 LLVM（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath 'C:\Program Files\LLVM\bin\libclang.dll')) {
+            winget install -e --id LLVM.LLVM --silent --accept-source-agreements --accept-package-agreements
+          }
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
+      # rgpui Linux 后端要 Wayland/X11 开发库，bindgen 要 libclang。
+      - name: 安装系统依赖（Linux）
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang libclang-dev pkg-config \
+            libwayland-dev libxkbcommon-dev libx11-dev libxcb1-dev \
+            libasound2-dev libudev-dev
+
+      # macOS 用 brew 的 llvm 提供 libclang（Xcode 自带的不一定被 bindgen 找到）。
+      - name: 安装 LLVM（macOS）
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install llvm || true
+          if [ -d /opt/homebrew/opt/llvm ]; then echo "LIBCLANG_PATH=/opt/homebrew/opt/llvm/lib" >> "$GITHUB_ENV"; fi
+          if [ -d /usr/local/opt/llvm ]; then echo "LIBCLANG_PATH=/usr/local/opt/llvm/lib" >> "$GITHUB_ENV"; fi
+
+      # 两次构建产物同名（target/<profile>/rupix），中途改名存下，避免后一次覆盖前一次。
+      # 静态 CRT 与 git 拉取配置由仓库 .cargo/config.toml 自带，CI 无需另配。
+      - name: 编译（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $prof = '${{ inputs.profile }}'
+          New-Item -ItemType Directory -Force -Path 'pkg' | Out-Null
+          cargo build --profile $prof
+          Copy-Item -Path "target/$prof/rupix.exe" -Destination 'pkg/rupix-regular.exe'
+          cargo build --profile $prof --features bundled-ocr-models
+          Copy-Item -Path "target/$prof/rupix.exe" -Destination 'pkg/rupix-bundled.exe'
+
+      - name: 编译（Linux/macOS）
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          prof='${{ inputs.profile }}'
+          mkdir -p pkg
+          cargo build --profile "$prof"
+          cp "target/$prof/rupix" pkg/rupix-regular
+          cargo build --profile "$prof" --features bundled-ocr-models
+          cp "target/$prof/rupix" pkg/rupix-bundled
+
+      # 常规包：exe + build.rs 已分发到输出目录旁的 models/；内嵌包：单文件即可。
+      - name: 打包（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $prof = '${{ inputs.profile }}'
+          New-Item -ItemType Directory -Force -Path 'dist', 'stage-regular', 'stage-bundled' | Out-Null
+          Copy-Item -Path 'pkg/rupix-regular.exe', 'README.md', 'LICENSE-APACHE' -Destination 'stage-regular/'
+          Rename-Item -Path 'stage-regular/rupix-regular.exe' -NewName 'rupix.exe'
+          Copy-Item -Path 'pkg/rupix-bundled.exe', 'README.md', 'LICENSE-APACHE' -Destination 'stage-bundled/'
+          Rename-Item -Path 'stage-bundled/rupix-bundled.exe' -NewName 'rupix.exe'
+          if (Test-Path "target/$prof/models") {
+            Copy-Item -Path "target/$prof/models" -Destination 'stage-regular/models' -Recurse
+          } else {
+            Write-Output '::warning::输出目录旁没有 models（构建脚本未分发），常规包缺 OCR 模型'
+          }
+          Compress-Archive -Path 'stage-regular/*' -DestinationPath 'dist/rupix-${{ matrix.name }}.zip'
+          Compress-Archive -Path 'stage-bundled/*' -DestinationPath 'dist/rupix-${{ matrix.name }}-bundled.zip'
+
+      - name: 打包（Linux/macOS）
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          prof='${{ inputs.profile }}'
+          mkdir -p dist stage-regular stage-bundled
+          cp pkg/rupix-regular stage-regular/rupix
+          cp README.md LICENSE-APACHE stage-regular/
+          cp pkg/rupix-bundled stage-bundled/rupix
+          cp README.md LICENSE-APACHE stage-bundled/
+          if [ -d "target/$prof/models" ]; then
+            cp -r "target/$prof/models" stage-regular/models
+          else
+            echo "::warning::输出目录旁没有 models（构建脚本未分发），常规包缺 OCR 模型"
+          fi
+          tar -czf "dist/rupix-${{ matrix.name }}.tar.gz" -C stage-regular .
+          tar -czf "dist/rupix-${{ matrix.name }}-bundled.tar.gz" -C stage-bundled .
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.name }}
+          # 只上传压缩包，中间目录不进 Release 附件。
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: warn
+
+  publish:
+    name: 发布 Release
+    # Windows 挂了整体 result 就是 failure，发版自动跳过；Linux/macOS 尽力而为不影响。
+    needs: build
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+
+      - name: 解析 tag 并按发版命名改名
+        id: tag
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag='${{ inputs.tag }}'
+          else
+            v=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+            tag="v$v"
+          fi
+          echo "value=$tag" >> "$GITHUB_OUTPUT"
+          # rupix-<平台>[-bundled].zip → rupix-<tag>-<平台>[-bundled].zip（对齐 0.1 命名）。
+          for f in dist/*; do
+            base=$(basename "$f")
+            mv "$f" "dist/$(echo "$base" | sed -E "s/^rupix-/rupix-$tag-/")"
+          done
+          ls dist/
+
+      - name: 发布到 GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.value }}
+          files: dist/*
+          body: |
+            编译档：`${{ inputs.profile }}`（size 体积最小，release 速度优先）；Windows 静态 CRT，免装运行库。
+
+            每个平台两个包（对齐 0.1）：常规版 `rupix-<版本>-<平台>.zip`（exe + 外置 `models/`，解压即用，目录不要挪动）；
+            内嵌版 `*-bundled.zip`（模型打进二进制，单文件开箱即用，体积 +21MB）。
+
+            说明：Windows 为主力验证平台；Linux/macOS 为交叉尝试编译，未在真机完整验证，遇到问题欢迎提 Issue。
