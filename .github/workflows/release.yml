@@ -180,6 +180,33 @@ jobs:
           tar -czf "dist/rupix-${{ matrix.name }}.tar.gz" -C stage-regular .
           tar -czf "dist/rupix-${{ matrix.name }}-bundled.tar.gz" -C stage-bundled .
 
+      # 冒烟：二进制能启动（--version/--help 立刻退出，不碰 GUI），单测复用本 profile 已编好的依赖。
+      - name: 冒烟（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & '.\pkg\rupix-regular.exe' --version
+          if ($LASTEXITCODE -ne 0) { throw '冒烟失败：--version' }
+          & '.\pkg\rupix-regular.exe' --help > $null
+          if ($LASTEXITCODE -ne 0) { throw '冒烟失败：--help' }
+          cargo test --profile '${{ inputs.profile }}'
+          if ($LASTEXITCODE -ne 0) { throw '冒烟失败：cargo test' }
+
+      - name: 冒烟（Linux/macOS）
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          prof='${{ inputs.profile }}'
+          ./pkg/rupix-regular --version
+          ./pkg/rupix-regular --help >/dev/null
+          cargo test --profile "$prof"
+          if [ "$(uname)" = "Darwin" ]; then
+            otool -L pkg/rupix-regular
+          else
+            echo 'glibc 基线需求（最高三行）：'
+            objdump -T pkg/rupix-regular | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -3
+          fi
+
       # 本平台编完立刻上传（--clobber 覆盖同名旧附件，支持单独重跑本 job）。
       - name: 发布附件（Windows）
         if: runner.os == 'Windows'
