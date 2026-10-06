@@ -39,7 +39,7 @@ jobs:
         shell: bash
         run: |
           win='{"id":"windows","os":"windows-latest","name":"windows-x86_64","best-effort":false}'
-          lin='{"id":"linux","os":"ubuntu-latest","name":"linux-x86_64","best-effort":true}'
+          lin='{"id":"linux","os":"ubuntu-22.04","name":"linux-x86_64","best-effort":true}'
           mac='{"id":"macos","os":"macos-latest","name":"macos-aarch64","best-effort":true}'
           case "${{ inputs.platform }}" in
             windows) m="[$win]" ;;
@@ -64,7 +64,8 @@ jobs:
 
           滚动更新：全平台触发删旧建新；单平台触发只替换该平台附件，不碰其他的。
           每个平台两个包：常规版 rupix-<平台>.zip（exe + 外置 models/，解压即用）；内嵌版 *-bundled.zip（模型打进二进制，单文件开箱即用，体积 +21MB）。
-          说明：Windows 为主力验证平台；Linux/macOS 为交叉尝试编译，未在真机完整验证，遇到问题欢迎提 Issue。"
+          说明：Windows 为主力验证平台；Linux/macOS 为交叉尝试编译，未在真机完整验证，遇到问题欢迎提 Issue。
+          Linux 基线：Ubuntu 22.04+ / Debian 12+ / Fedora 35+（glibc ≥ 2.35），更老系统请用源码编译。"
 
   build:
     name: build (${{ matrix.name }})
@@ -97,6 +98,8 @@ jobs:
       # rgpui Linux 后端要 Wayland/X11 开发库，bindgen 要 libclang。
       # 注意：libclang 解压约 300MB，这步要几分钟，不是卡死；--no-install-recommends 已砍掉附带推荐包。
       # build-essential / pkg-config / gcc 是 runner 自带，不重复装；clang 编译器本体不需要（bindgen 只用 libclang.so）。
+      # Linux 故意钉在 22.04 runner：glibc 只能向前兼容，在越老的系统上编译，产物的基线越低（22.04 → glibc 2.35）。
+      # musl 全静态走不通（ocr-rs 预编译 MNN 库 + Wayland/X11 图形栈都是 glibc 生态），这是 GUI 应用的通用做法。
       - name: 安装系统依赖（Linux）
         if: runner.os == 'Linux'
         shell: bash
