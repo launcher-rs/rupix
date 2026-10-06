@@ -243,12 +243,27 @@ fn save_image(explicit: Option<&Path>, img: &RgbaImage) -> Result<PathBuf, Strin
 ///
 /// release 用 `windows_subsystem = "windows"` 编译，默认无控制台；
 /// 从 cmd / PowerShell 启动时挂接父控制台，`println!` 才能被用户看到。
-/// 挂接失败（如双击启动）直接忽略，截图流程不受影响。
+/// 挂接失败（如双击启动、CI 无头会话）则把标准输出 / 错误重定向到 NUL：
+/// 此时根本没有可看的地方，保住退出码正确比直接崩溃更重要
+///（`println!` 往无效句柄写会 panic，进程以 101 退出）。
 #[cfg(target_os = "windows")]
 fn attach_console() {
-    use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    use std::os::windows::io::IntoRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle,
+    };
     unsafe {
-        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        if AttachConsole(ATTACH_PARENT_PROCESS).is_ok() {
+            return;
+        }
+        // NUL 设备用标准库打开即可，不新增 windows 特性依赖；
+        // into_raw_handle 会接管句柄（不析构），随进程结束自动回收。
+        if let Ok(file) = std::fs::OpenOptions::new().write(true).open("NUL") {
+            let handle = HANDLE(file.into_raw_handle() as isize);
+            let _ = SetStdHandle(STD_OUTPUT_HANDLE, handle);
+            let _ = SetStdHandle(STD_ERROR_HANDLE, handle);
+        }
     }
 }
 
