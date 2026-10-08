@@ -260,7 +260,7 @@ fn attach_console() {
         // NUL 设备用标准库打开即可，不新增 windows 特性依赖；
         // into_raw_handle 会接管句柄（不析构），随进程结束自动回收。
         if let Ok(file) = std::fs::OpenOptions::new().write(true).open("NUL") {
-            let handle = HANDLE(file.into_raw_handle() as isize);
+            let handle = HANDLE(file.into_raw_handle());
             let _ = SetStdHandle(STD_OUTPUT_HANDLE, handle);
             let _ = SetStdHandle(STD_ERROR_HANDLE, handle);
         }
