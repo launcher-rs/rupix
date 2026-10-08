@@ -6,6 +6,21 @@
 
 - 见 `docs/ROADMAP.md` 的 0.2 规划（JSON 配置统一、开机自启）。
 
+### Fixed
+
+- Linux：区域截图看不到遮罩层与选区框。Rupix 侧把两个全屏浮层（`overlay.rs` 选区层、
+  `picker.rs` 取色层）的 `window_background` 从 `Transparent` 改为 `Opaque` —— 它们铺的是
+  一张冻结的整屏截图，本来就不需要窗口级透明；配合 rgpui 侧 X11 的 visual 选择修复
+  （仅当「请求非 Opaque + 服务器有 32 位 visual + 合成器在场」才走 ARGB）后浮层正常上屏
+- Linux：启动后设置窗口直接甩在桌面上（Windows 是隐藏到托盘）、以及设置窗口出现后先黑屏
+  一段时间才出内容 —— 两条根因都在 rgpui 的 X11 后端（忽略 `WindowOptions::show == false`、
+  建窗未设 `background_pixel`），Rupix 侧无改动，随 rgpui 更新生效
+
+### Changed
+
+- `rgpui` / `rgpui-platform` 依赖临时切到本地源码路径（`../rgpui/crates/*`）以带上上述 Linux
+  修复；rgpui 发版后把 `path` 换回 `version`
+
 ## [0.1.0] - 2026-09-24
 
 首个版本：看到 → 截取 → 留存。

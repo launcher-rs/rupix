@@ -2,5 +2,6 @@
 .idea
 temp
 dist
+.qoder
 # OCR 模型已进仓库（assets/ocr-models，约 21MB），新 clone 开箱即用；
 # `scripts/download-ocr-models.ps1` 仅用于更新模型版本。

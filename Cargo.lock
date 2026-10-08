@@ -5050,9 +5050,9 @@ dependencies = [
 
 [[package]]
 name = "rgpui-linux"
-version = "1.4.1"
+version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1ae61036e169ded22e7c35481cd3f95acc16922c48a993d2f45f75fe63ff226"
+checksum = "c3b08eec0fed821091918db5e2b5b021fb67118f435adb4175f700557d4d4c6d"
 dependencies = [
  "accesskit",
  "accesskit_unix",

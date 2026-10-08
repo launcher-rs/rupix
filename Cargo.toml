@@ -5,10 +5,17 @@ edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
-rgpui = { version = "1.4.1", features = ["screen-capture"] }
+# rgpui 暂用并列目录里的源码（rgpui_workspace/rgpui）：Linux 浮层 visual 选择、
+# show=false 隐藏启动、帧同步握手三处修复目前只在源码中，crates.io 上的 1.4.1 还没有。
+# rgpui 发新版后把下面两行的 path 换回 version = "x.y.z" 即可，特性保持不变。
+rgpui = { version = "1.4", features = ["screen-capture"] }
 # Linux 图形后端二选一（wayland / x11），缺省两个都不开时运行时直接 unreachable 崩溃；
 # 注意 rgpui 自身的同名特性是空壳，真正的后端开关在 rgpui-linux，经 rgpui-platform 透传才生效。
-rgpui-platform = { version = "1.4.1", features = ["screen-capture", "wayland", "x11"] }
+rgpui-platform = { version = "1.4", features = [
+  "screen-capture",
+  "wayland",
+  "x11",
+] }
 # 图片编解码与像素操作：首帧保存、选区裁剪、马赛克、导出 PNG。
 # 只开常用格式：全默认会经特性统一把 avif（rav1e 整套编码器）/ tiff / exr 等
 # 重新引入，抵消 rgpui 的体积裁剪；冷门格式在“打开图片编辑”时报不支持。

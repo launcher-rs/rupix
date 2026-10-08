@@ -44,10 +44,12 @@ pub fn open_picker(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, frame: Ca
     cap_log(&format!("取色浮层打开：img={img_w}x{img_h}"));
     let opened = cx.open_window(
         WindowOptions {
-            // 无边框置顶透明浮层，与区域选择浮层同规格（Windows 下必须 Fullscreen）。
+            // 无边框置顶浮层，与区域选择浮层同规格（Windows 下必须 Fullscreen）。
+            // 背景同样取 Opaque：底色是铺满全屏的冻结截图，不需要窗口级 alpha，
+            // 而 X11 上的 ARGB visual 在 alpha 合成不可用时会让浮层整体不可见。
             titlebar: None,
             window_bounds: Some(WindowBounds::Fullscreen(display_bounds)),
-            window_background: WindowBackgroundAppearance::Transparent,
+            window_background: WindowBackgroundAppearance::Opaque,
             kind: WindowKind::Overlay,
             focus: true,
             show: true,

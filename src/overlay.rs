@@ -59,12 +59,16 @@ pub fn open_overlay(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, pending:
     ));
     let opened = cx.open_window(
         WindowOptions {
-            // 无边框置顶透明浮层，盖住全屏做选区交互。
+            // 无边框置顶浮层，盖住全屏做选区交互。
+            // 背景必须是 Opaque：浮层本就用冻结截图铺满整屏，遮罩、选框、徽标都是在这张
+            // 图上做的层内混合，窗口级逐像素 alpha 没有意义；而 X11 下一旦要求 Transparent
+            // 就会取 32 位 ARGB visual，在 alpha 合成路径不可用的环境（xrdp / 软件 GL 等）
+            // 里写进去的 alpha 恒为 0，整扇浮层被判成全透明——表现为没有遮罩也没有选框。
             // 注意：必须用 Fullscreen 而不是 Windowed——Windowed + Overlay
             // 在 Windows 下 placement 不生效，窗口保持 0x0 不可见。
             titlebar: None,
             window_bounds: Some(WindowBounds::Fullscreen(display_bounds)),
-            window_background: WindowBackgroundAppearance::Transparent,
+            window_background: WindowBackgroundAppearance::Opaque,
             kind: WindowKind::Overlay,
             focus: true,
             show: true,
