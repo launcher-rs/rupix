@@ -132,9 +132,19 @@ cargo build --profile size
 > 一张 4K 冻结帧约 33MB，要走推流取帧 → PNG 落盘 → 解码（debug 下单次约半秒）→ RGBA→BGRA 逐像素转换 → 全屏浮层渲染 → 裁剪 / 马赛克 / 烧录导出。
 > 这些循环在无优化下每个像素都有边界检查与函数调用开销，也无法向量化，比 release 慢一到两个数量级，所以拖拽选区、放大镜、取色都会掉帧。只用 `cargo run` 验证逻辑，体验务必用 release 包。
 
-## 发版（GitHub Actions，手动触发）
+## 发版（GitHub Actions）
 
-不自动触发。去仓库 **Actions → release → Run workflow**，选 `profile`（默认 `size`）和 `platform`（默认全平台），点运行即可。发的是固定 `latest` 滚动 Release，不带版本号：
+同一条 `release` 工作流，两种模式：
+
+**正式版本发布 — 打 tag 自动触发**：推一个 `v*` 标签即编全平台，产物发到与标签同名的 Release，不碰 `latest`：
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+标签版本号必须与 `Cargo.toml` 的 `version` 一致，否则 prepare 阶段直接失败——防止发出「标签写 0.3.0、`rupix --version` 却打 0.2.0」的误标包。此模式编译档固定 `size`；重复推同一标签只覆盖本平台附件，不会删已有 Release。
+
+**滚动 `latest` — 手动触发**：去仓库 **Actions → release → Run workflow**，选 `profile`（默认 `size`）和 `platform`（默认全平台），点运行即可。发的是固定 `latest` Release，不带版本号：
 
 - 全平台触发时删旧建新；单选某平台时只替换该平台附件，可单独重编失败的平台。
 - 各平台编完即传，不互相等待：Windows/macOS 先好先能下载，不用等 Linux。

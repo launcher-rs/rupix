@@ -1,9 +1,15 @@
-# 手动发布滚动 Release（固定 tag `latest`；全平台触发删旧建新，单平台触发只替换该平台附件）。
-# 仅 workflow_dispatch，不自动触发。各平台编完即传附件，互不等待；Windows 必过，Linux/macOS 尽力而为。
+# 双模式发布（同一个 job，两种目标）：
+#   推 `v*` 标签 → 正式版本归档：release 名与 git tag 都是该版本号，不碰 latest，编译档固定 size。
+#   手动 workflow_dispatch → 滚动 `latest`：全平台触发删旧建新，单平台触发只替换该平台附件。
+# 各平台编完即传附件，互不等待；Windows 必过，Linux/macOS 尽力而为。
 # 每平台两个包：常规版（exe + 外置 models/）与内嵌版（--features bundled-ocr-models，开箱即用）。
 name: release
 
 on:
+  # 正式版本发布：打 tag 即触发，无需手动点按钮。
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       profile:
@@ -23,44 +29,89 @@ permissions:
   contents: write
 
 jobs:
-  # 先建好空 Release，各平台 job 只管往里传附件：早编完早发布，不用等最慢的。
-  # 顺带按 platform 输入算出本次要跑的矩阵（job 级 if 不支持 matrix，只能走 outputs 动态矩阵）。
+  # 先建好目标 Release，各平台 job 只管往里传附件：早编完早发布，不用等最慢的。
+  # 顺带算出本次要跑的矩阵（job 级 if 不支持 matrix，只能走 outputs 动态矩阵），
+  # 并把发布目标（tag 名 + 编译档）在这里一次定稿：两种触发方式的差异全收口在本 job，
+  # 下面的 build job 只消费 outputs，不再区分自己是被谁触发的。
   prepare:
-    name: 准备 rolling Release
+    name: 准备 Release
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      tag: ${{ steps.plan.outputs.tag }}
+      profile: ${{ steps.plan.outputs.profile }}
     steps:
       # gh release 系列命令要靠 git 确定仓库，prepare 也必须先检出。
       - uses: actions/checkout@v4
 
-      - name: 算本次矩阵
-        id: set-matrix
+      - name: 定发布目标与矩阵
+        id: plan
         shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref_name }}
+          INPUT_PLATFORM: ${{ inputs.platform }}
+          INPUT_PROFILE: ${{ inputs.profile }}
         run: |
+          if [ "$EVENT" = "push" ]; then
+            # tag 触发 = 正式版本：目标就是 tag 名本身，size 档（发布包体积优先）。
+            tag="$REF"
+            prof='size'
+            # platform 输入在 tag 事件下为空，走下面的默认分支 = 全平台。
+            # 版本一致性校验：release 标题与 exe 的 --version 都取自 Cargo.toml，
+            # 对不上说明标签打错（本项目有过只改 Cargo.toml 不改建 lock、以及手搓 release 的先例），
+            # 宁可在这里挡住，也不要发出去一个标着 0.3.0、实际 --version 打 0.2.0 的包。
+            crate=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+            if [ "${tag#v}" != "$crate" ]; then
+              echo "::error::标签 $tag 与 Cargo.toml 版本 $crate 不一致：先改版本号（含 Cargo.lock）再打 tag"
+              exit 1
+            fi
+          else
+            # 手动触发 = 滚动 latest，编译档按选择来。
+            tag='latest'
+            prof="${INPUT_PROFILE:-size}"
+          fi
+
           win='{"id":"windows","os":"windows-latest","name":"windows-x86_64","best-effort":false}'
           lin='{"id":"linux","os":"ubuntu-22.04","name":"linux-x86_64","best-effort":true}'
           mac='{"id":"macos","os":"macos-latest","name":"macos-aarch64","best-effort":true}'
-          case "${{ inputs.platform }}" in
+          case "$INPUT_PLATFORM" in
             windows) m="[$win]" ;;
             linux) m="[$lin]" ;;
             macos) m="[$mac]" ;;
             *) m="[$win,$lin,$mac]" ;;
           esac
-          echo "matrix=$m" >> "$GITHUB_OUTPUT"
-      - name: 建空 latest
+
+          {
+            echo "matrix=$m"
+            echo "tag=$tag"
+            echo "profile=$prof"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 建目标 Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          PROF: ${{ steps.plan.outputs.profile }}
+          INPUT_PLATFORM: ${{ inputs.platform }}
         run: |
-          if [ "${{ inputs.platform }}" = "all" ]; then
-            # 同名附件直接上传会冲突，全平台触发时删旧建新；单平台触发跳过，保留其他平台附件。
+          if [ "$TAG" != "latest" ]; then
+            # 正式版本：git tag 已由 push 事件存在，这里只补上同名的 release。
+            # 重复推同一个 tag（改代码后强制重打）时只补缺失的 release，不删已有附件、不碰 latest。
+            if ! gh release view "$TAG" >/dev/null 2>&1; then
+              gh release create "$TAG" --title "Rupix 拾景 $TAG" --notes "版本发布 $TAG，三平台各两个包：常规版（解压即用，含外置 models/）与内嵌版（-bundled，模型打进二进制，单文件）。Windows 静态 CRT，免装运行库；Linux 基线 glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+ / Fedora 35+）。"
+            fi
+            exit 0
+          fi
+          # 同名附件直接上传会冲突，全平台触发时删旧建新；单平台触发跳过，保留其他平台附件。
+          if [ "$INPUT_PLATFORM" = "all" ]; then
             gh release delete latest --cleanup-tag -y || true
           fi
           if ! gh release view latest >/dev/null 2>&1; then
             gh release create latest --title "最新构建（手动触发，滚动更新）" --notes ""
           fi
-          gh release edit latest --title "最新构建（手动触发，滚动更新）" --notes "编译档：${{ inputs.profile }}（size 体积最小，release 速度优先）；Windows 静态 CRT，免装运行库。
+          gh release edit latest --title "最新构建（手动触发，滚动更新）" --notes "编译档：$PROF（size 体积最小，release 速度优先）；Windows 静态 CRT，免装运行库。
 
           滚动更新：全平台触发删旧建新；单平台触发只替换该平台附件，不碰其他的。
           每个平台两个包：常规版 rupix-<平台>.zip（exe + 外置 models/，解压即用）；内嵌版 *-bundled.zip（模型打进二进制，单文件开箱即用，体积 +21MB）。
@@ -125,7 +176,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $prof = '${{ inputs.profile }}'
+          $prof = '${{ needs.prepare.outputs.profile }}'
           New-Item -ItemType Directory -Force -Path 'pkg' | Out-Null
           cargo build --profile $prof
           Copy-Item -Path "target/$prof/rupix.exe" -Destination 'pkg/rupix-regular.exe'
@@ -136,7 +187,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          prof='${{ inputs.profile }}'
+          prof='${{ needs.prepare.outputs.profile }}'
           mkdir -p pkg
           cargo build --profile "$prof"
           cp "target/$prof/rupix" pkg/rupix-regular
@@ -148,7 +199,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $prof = '${{ inputs.profile }}'
+          $prof = '${{ needs.prepare.outputs.profile }}'
           New-Item -ItemType Directory -Force -Path 'dist', 'stage-regular', 'stage-bundled' | Out-Null
           Copy-Item -Path 'pkg/rupix-regular.exe', 'README.md', 'LICENSE-APACHE' -Destination 'stage-regular/'
           Rename-Item -Path 'stage-regular/rupix-regular.exe' -NewName 'rupix.exe'
@@ -166,7 +217,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          prof='${{ inputs.profile }}'
+          prof='${{ needs.prepare.outputs.profile }}'
           mkdir -p dist stage-regular stage-bundled
           cp pkg/rupix-regular stage-regular/rupix
           cp README.md LICENSE-APACHE stage-regular/
@@ -195,14 +246,14 @@ jobs:
             $proc = Start-Process -FilePath $exe -ArgumentList $flag -NoNewWindow -Wait -PassThru
             if ($proc.ExitCode -ne 0) { throw "冒烟失败：$flag（退出码 $($proc.ExitCode)）" }
           }
-          cargo test --profile '${{ inputs.profile }}'
+          cargo test --profile '${{ needs.prepare.outputs.profile }}'
           if ($LASTEXITCODE -ne 0) { throw '冒烟失败：cargo test' }
 
       - name: 冒烟（Linux/macOS）
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          prof='${{ inputs.profile }}'
+          prof='${{ needs.prepare.outputs.profile }}'
           ./pkg/rupix-regular --version
           ./pkg/rupix-regular --help >/dev/null
           cargo test --profile "$prof"
@@ -219,11 +270,11 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload latest dist/*.zip --clobber
+        run: gh release upload '${{ needs.prepare.outputs.tag }}' dist/*.zip --clobber
 
       - name: 发布附件（Linux/macOS）
         if: runner.os != 'Windows'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload latest dist/*.tar.gz --clobber
+        run: gh release upload '${{ needs.prepare.outputs.tag }}' dist/*.tar.gz --clobber
