@@ -255,6 +255,13 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "General"
             }
         }
+        "tab.about" => {
+            if zh {
+                "关于"
+            } else {
+                "About"
+            }
+        }
         // —— 设置窗口 ——
         "app.title" => {
             if zh {
@@ -417,6 +424,155 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "已切换为{lang}"
             } else {
                 "Switched to {lang}"
+            }
+        }
+        // —— 开机启动卡（通用 Tab） ——
+        "autostart.title" => {
+            if zh {
+                "开机启动（登录后自动驻留托盘）"
+            } else {
+                "Launch at login (resides in tray)"
+            }
+        }
+        "autostart.note" => {
+            if zh {
+                "开启后随系统登录在后台自动启动，不弹窗口，快捷键照常可用；关闭即撤销登记。只写当前用户范围，无需管理员权限"
+            } else {
+                "Starts in background on login (no window, hotkeys still work); disabling removes the entry. Current-user scope only, no admin rights"
+            }
+        }
+        "autostart.on" => {
+            if zh {
+                "已开启"
+            } else {
+                "Enabled"
+            }
+        }
+        "autostart.off" => {
+            if zh {
+                "已关闭"
+            } else {
+                "Disabled"
+            }
+        }
+        "autostart.enabled" => {
+            if zh {
+                "已开启开机启动"
+            } else {
+                "Autostart enabled"
+            }
+        }
+        "autostart.disabled" => {
+            if zh {
+                "已关闭开机启动"
+            } else {
+                "Autostart disabled"
+            }
+        }
+        "autostart.failed" => {
+            if zh {
+                "设置开机启动失败：{err}"
+            } else {
+                "Failed to update autostart: {err}"
+            }
+        }
+        "autostart.unsupported" => {
+            if zh {
+                "当前系统暂不支持开机启动"
+            } else {
+                "Autostart is not supported on this system"
+            }
+        }
+        // —— 关于 Tab ——
+        "about.title" => {
+            if zh {
+                "关于 Rupix · 拾景"
+            } else {
+                "About Rupix"
+            }
+        }
+        "about.version" => {
+            if zh {
+                "版本"
+            } else {
+                "Version"
+            }
+        }
+        "about.desc" => {
+            if zh {
+                "简介"
+            } else {
+                "Description"
+            }
+        }
+        "about.desc_value" => {
+            if zh {
+                "基于 Rust + rgpui 的轻量级跨平台截图工具，从屏幕中拾取所见之景"
+            } else {
+                "A lightweight cross-platform screenshot tool built with Rust + rgpui"
+            }
+        }
+        "about.license" => {
+            if zh {
+                "许可证"
+            } else {
+                "License"
+            }
+        }
+        "about.license_value" => {
+            if zh {
+                "Apache-2.0（原文见仓库 LICENSE-APACHE）"
+            } else {
+                "Apache-2.0 (full text in the repository's LICENSE-APACHE)"
+            }
+        }
+        "about.stack" => {
+            if zh {
+                "技术栈"
+            } else {
+                "Built with"
+            }
+        }
+        "about.stack_value" => {
+            if zh {
+                "Rust 2024 · rgpui（界面 / 窗口 / 屏幕捕获）· ocr-rs（离线 OCR：PaddleOCR + MNN）"
+            } else {
+                "Rust 2024 · rgpui (UI / window / capture) · ocr-rs (offline OCR: PaddleOCR + MNN)"
+            }
+        }
+        "about.repo" => {
+            if zh {
+                "仓库地址"
+            } else {
+                "Repository"
+            }
+        }
+        "about.open" => {
+            if zh {
+                "打开"
+            } else {
+                "Open"
+            }
+        }
+        "about.copy" => {
+            if zh {
+                "复制"
+            } else {
+                "Copy"
+            }
+        }
+        "about.copied" => {
+            if zh {
+                "已复制仓库地址"
+            } else {
+                "Repository URL copied"
+            }
+        }
+        "about.motto" => {
+            if zh {
+                "理念：看到 → 截取 → 留存。欢迎提 Issue / PR：https://github.com/launcher-rs/rupix/issues"
+            } else {
+                "Motto: See → Capture → Keep. Issues / PRs welcome: https://github.com/launcher-rs/rupix/issues"
             }
         }
         // —— OCR 模型卡（OCR Tab） ——

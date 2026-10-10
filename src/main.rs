@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod autostart;
 mod capture;
 mod cli;
 // 公开函数均被 viewer 使用，allow 仅为冗余防护。

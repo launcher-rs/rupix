@@ -30,14 +30,18 @@
 - 迁移映射：`rupix-savedir.txt`→`save_dir`，三个热键→`hotkeys.*`，
   `rupix-lang.txt`→`lang`，`rupix-ocrfiles.txt`三行→`ocr.{det,rec,keys}`。
 
-### 2. 开机自启开关
+### 2. 开机自启开关（已完成）
 
+- 落地为 `src/autostart.rs`，设置 → 通用加"开机启动"开关；
+  对外 API：`is_supported()` / `is_enabled()` / `set_enabled(on)`。
 - Windows：`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 写 `Rupix = "<exe完整路径>"`，
-  需给 `windows` 依赖加 `Win32_System_Registry` 特性；其他平台暂空实现（接口先行）。
-- 细节：exe 路径加引号（防空格截断）；HKCU 无需管理员权限；
-  开关状态每次打开设置页实时读注册表（外部改了也显示正确）；
-  配置只存 `autostart` 期望值，实际以注册表为准（重装/搬目录后自愈）。
-- 设置 → 通用加"开机自启"开关；发版 release 说明里注明自启行为。
+  `windows` 依赖已加 `Win32_System_Registry` 特性；exe 路径加引号（防空格截断）；HKCU 无需管理员权限。
+- macOS / Linux 一并实现（原计划"其他平台暂空实现"，实际三个平台都做了）：
+  macOS 写 `~/Library/LaunchAgents/com.launcher-rs.rupix.plist` 并顺手 `launchctl bootstrap`，
+  Linux 写 `~/.config/autostart/rupix.desktop`（XDG autostart）。
+- 状态每次渲染实时读系统登记（外部改了也显示正确），**不另存期望值**：
+  登记路径与当前 exe 不一致视为未开启，重开一次即用当前路径覆盖（搬目录后自愈）。
+- 发版 release 说明里注明自启行为（默认关闭）。
 
 ### 3. 候选（待定优先级）
 

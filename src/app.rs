@@ -6,6 +6,7 @@
 //! 日常使用快捷键截图即可，无需打开本窗口。
 
 use crate::{
+    autostart,
     capture::{begin_capture, begin_picker},
     hotkey::{HotkeyKind, apply_global_hotkey, hotkey_value_to_string, save_hotkey_string},
     i18n::{available_langs, lang, set_lang, tr, tr_fmt},
@@ -23,6 +24,12 @@ use std::path::PathBuf;
 
 /// 默认保存目录的配置文件名（与程序放同一目录，参考热键配置）。
 const SAVE_DIR_FILE: &str = "rupix-savedir.txt";
+
+/// 项目仓库地址（关于页展示、打开与复制共用）。
+const REPO_URL: &str = "https://github.com/launcher-rs/rupix";
+
+/// 当前程序版本号（编译期取自 `Cargo.toml`，关于页展示用）。
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 系统默认保存目录：图片库下的 `rupix` 子目录（不存在自动创建）。
 ///
@@ -119,7 +126,7 @@ pub struct PreviewImage {
     pub h: u32,
 }
 
-/// 设置页 Tab：截图（入口）、快捷键（录制）、保存（目录+最近）、OCR 模型（目录+下载）、通用（语言）。
+/// 设置页 Tab：截图（入口）、快捷键（录制）、保存（目录+最近）、OCR 模型（目录+下载）、通用（语言+开机启动）、关于（版本与仓库）。
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum SettingsTab {
     /// 截图：截图入口按钮。
@@ -131,8 +138,10 @@ enum SettingsTab {
     Save,
     /// OCR 模型：自定义目录与下载指引。
     Ocr,
-    /// 通用：界面语言。
+    /// 通用：界面语言与开机启动。
     General,
+    /// 关于：版本、简介、许可证与仓库地址。
+    About,
 }
 
 impl SettingsTab {
@@ -144,6 +153,7 @@ impl SettingsTab {
             SettingsTab::Save => "save",
             SettingsTab::Ocr => "ocr",
             SettingsTab::General => "general",
+            SettingsTab::About => "about",
         }
     }
 
@@ -155,6 +165,7 @@ impl SettingsTab {
             SettingsTab::Save => tr("tab.save"),
             SettingsTab::Ocr => tr("tab.ocr"),
             SettingsTab::General => tr("tab.general"),
+            SettingsTab::About => tr("tab.about"),
         }
     }
 
@@ -165,18 +176,20 @@ impl SettingsTab {
             "save" => SettingsTab::Save,
             "ocr" => SettingsTab::Ocr,
             "general" => SettingsTab::General,
+            "about" => SettingsTab::About,
             _ => SettingsTab::Capture,
         }
     }
 
     /// 全部 Tab（左侧竖排栏顺序）。
-    fn all() -> [SettingsTab; 5] {
+    fn all() -> [SettingsTab; 6] {
         [
             SettingsTab::Capture,
             SettingsTab::Hotkey,
             SettingsTab::Save,
             SettingsTab::Ocr,
             SettingsTab::General,
+            SettingsTab::About,
         ]
     }
 }
@@ -230,6 +243,34 @@ enum EntryAction {
     OpenImage,
 }
 
+/// 关于页的信息行：左侧固定宽灰标签，右侧值（长文本换行不把卡片撑宽）。
+///
+/// # 参数
+/// - `label`: 行标签（版本 / 简介 / 许可证 …）。
+/// - `value`: 行内容。
+fn info_row(label: &str, value: &str) -> impl IntoElement {
+    div()
+        .flex()
+        .items_baseline()
+        .gap_3()
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(76.))
+                .text_xs()
+                .text_color(rgb(0x888888))
+                .child(label.to_string()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .text_xs()
+                .text_color(rgb(0x333333))
+                .child(value.to_string()),
+        )
+}
+
 /// 主视图状态。
 pub struct RupixApp {
     /// 是否正在截取中（防止重复推流）。
@@ -248,12 +289,14 @@ pub struct RupixApp {
     picker_input: Entity<HotkeyInputState>,
     /// 状态栏文本。
     status: SharedString,
-    /// 设置页当前 Tab（截图 / 快捷键 / 保存 / OCR 模型 / 通用）。
+    /// 设置页当前 Tab（截图 / 快捷键 / 保存 / OCR 模型 / 通用 / 关于）。
     settings_tab: SettingsTab,
     /// 截图默认保存目录（截图后自动存原图到此，设置页可改）。
     save_dir: PathBuf,
     /// 最近保存的文件（路径 + 提示语，最多保留 10 条）。
     recents: Vec<(PathBuf, String)>,
+    /// 开机启动当前状态（通用 Tab 开关的显示与切换依据，启动时读真实状态）。
+    autostart: bool,
 }
 
 impl RupixApp {
@@ -284,6 +327,8 @@ impl RupixApp {
             settings_tab: SettingsTab::default(),
             save_dir: load_save_dir(),
             recents: Vec::new(),
+            // 开机启动状态实时取自注册表 / 自启动文件，避免与系统实际状态脱节。
+            autostart: autostart::is_enabled(),
         }
     }
 
@@ -457,6 +502,29 @@ impl RupixApp {
         self.save_dir = dir.clone();
         let msg = tr_fmt("savedir.restored", &[("dir", &dir.display().to_string())]);
         self.set_status(&msg, cx);
+    }
+
+    /// 切换开机启动：登记 / 删除当前系统的自启动项，成功后同步开关状态。
+    ///
+    /// 失败（权限不足、目录不可写等）只在状态栏提示，开关保持原状态，
+    /// 免得界面显示“已开启”而系统里其实没生效。
+    fn toggle_autostart(&mut self, cx: &mut Context<Self>) {
+        let target = !self.autostart;
+        match autostart::set_enabled(target) {
+            Ok(()) => {
+                self.autostart = target;
+                let msg = tr(if target {
+                    "autostart.enabled"
+                } else {
+                    "autostart.disabled"
+                });
+                self.set_status(&msg, cx);
+            }
+            Err(error) => {
+                let msg = tr_fmt("autostart.failed", &[("err", &error.to_string())]);
+                self.set_status(&msg, cx);
+            }
+        }
     }
 
     /// 快捷键录制框变化时自动应用新的全局热键（区域 / 全屏各自独立）。
@@ -961,7 +1029,7 @@ impl RupixApp {
             .child(self.download_card(cx))
     }
 
-    /// 通用 Tab：界面语言卡。
+    /// 通用 Tab：界面语言卡 + 开机启动卡。
     fn general_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let current = lang();
@@ -1015,8 +1083,162 @@ impl RupixApp {
                     .text_color(rgb(0x888888))
                     .child(tr("lang.note")),
             );
-        // 通用 Tab 目前只有语言卡，直接返回（OCR 配置已独立成 Tab）。
-        lang_card
+        // 语言卡 + 开机启动卡，竖排成一列（OCR 配置已独立成 Tab）。
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(lang_card)
+            .child(self.autostart_card(cx))
+    }
+
+    /// 开机启动卡（通用 Tab）：显示当前状态，点击在“开启 / 关闭”间切换。
+    ///
+    /// 状态以系统实际登记为准（实时读注册表 / 自启动文件），不额外存配置，
+    /// 避免与任务管理器、系统设置里的改动打架。
+    fn autostart_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let v = cx.entity();
+        let on = self.autostart;
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded_md()
+            .bg(rgb(0xFFFFFF))
+            .child(div().text_sm().child(tr("autostart.title")))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x555555))
+                    .child(tr("autostart.note")),
+            );
+        if autostart::is_supported() {
+            // 开关做成两态胶囊按钮（与语言选择同款交互）：绿 = 已开启，灰 = 已关闭。
+            card = card.child(
+                div()
+                    .id("rupix-btn-autostart")
+                    .w(px(104.))
+                    .px_3()
+                    .py_1()
+                    .rounded_md()
+                    .text_sm()
+                    .text_center()
+                    .cursor_pointer()
+                    .bg(if on { rgb(0x1F9E4B) } else { rgb(0xEEEEEE) })
+                    .text_color(if on { rgb(0xFFFFFF) } else { rgb(0x333333) })
+                    .child(tr(if on { "autostart.on" } else { "autostart.off" }))
+                    .on_click(move |_, _, cx| {
+                        v.update(cx, |this, cx| this.toggle_autostart(cx));
+                    }),
+            );
+        } else {
+            // 未适配的平台只说明不支持，不放一个点了没反应的开关。
+            card = card.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0xAA0000))
+                    .child(tr("autostart.unsupported")),
+            );
+        }
+        card
+    }
+
+    /// 关于 Tab：版本、简介、许可证、技术栈与仓库地址（可打开 / 可复制）。
+    fn about_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        let version = format!("v{APP_VERSION}");
+        // 关闭按钮只隐藏不退出，关于页常被当“检查版本”入口，这里给足信息。
+        let mut about_card = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded_md()
+            .bg(rgb(0xFFFFFF))
+            .child(div().text_sm().child(tr("about.title")))
+            .child(info_row(&tr("about.version"), &version))
+            .child(info_row(&tr("about.desc"), &tr("about.desc_value")))
+            .child(info_row(&tr("about.license"), &tr("about.license_value")))
+            .child(info_row(&tr("about.stack"), &tr("about.stack_value")));
+        // 仓库行：长地址允许收缩换行，右侧固定两个小按钮。
+        let open_view = view.clone();
+        about_card = about_card.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0x888888))
+                        .child(tr("about.repo")),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_xs()
+                                .text_color(rgb(0x1E90FF))
+                                .child(REPO_URL.to_string()),
+                        )
+                        // 打开仓库：交系统默认浏览器（各平台后端都认 URL）。
+                        .child(
+                            div()
+                                .id("rupix-btn-about-open")
+                                .flex_shrink_0()
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .text_xs()
+                                .cursor_pointer()
+                                .bg(rgb(0x1E90FF))
+                                .text_color(rgb(0xFFFFFF))
+                                .child(tr("about.open"))
+                                .on_click(|_, _, cx| {
+                                    cx.open_with_system(std::path::Path::new(REPO_URL));
+                                }),
+                        )
+                        // 复制链接：写剪贴板 + 状态栏回执（与 OCR 卡的复制一致）。
+                        .child(
+                            div()
+                                .id("rupix-btn-about-copy")
+                                .flex_shrink_0()
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .text_xs()
+                                .cursor_pointer()
+                                .bg(rgb(0xEEEEEE))
+                                .text_color(rgb(0x333333))
+                                .child(tr("about.copy"))
+                                .on_click(move |_, _, cx| {
+                                    let url = REPO_URL.to_string();
+                                    open_view.update(cx, |this, cx| {
+                                        cx.write_to_clipboard(rgpui::ClipboardItem::new_string(
+                                            url,
+                                        ));
+                                        this.set_status(&tr("about.copied"), cx);
+                                    });
+                                }),
+                        ),
+                ),
+        );
+        // 理念行放在第二张卡，视觉上把“是什么”与“是什么做的”分开。
+        div().flex().flex_col().gap_3().child(about_card).child(
+            div()
+                .p_3()
+                .rounded_md()
+                .bg(rgb(0xFFFFFF))
+                .text_xs()
+                .text_color(rgb(0x555555))
+                .child(tr("about.motto")),
+        )
     }
 }
 
@@ -1120,6 +1342,7 @@ impl Render for RupixApp {
                                 SettingsTab::Save => self.save_tab(cx).into_any_element(),
                                 SettingsTab::Ocr => self.ocr_tab(cx).into_any_element(),
                                 SettingsTab::General => self.general_tab(cx).into_any_element(),
+                                SettingsTab::About => self.about_tab(cx).into_any_element(),
                             }),
                     )
                     // 状态栏（常驻底部，各 Tab 操作反馈统一落这里；固定不滚）。
