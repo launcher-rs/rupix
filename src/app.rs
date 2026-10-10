@@ -1144,11 +1144,13 @@ impl RupixApp {
         card
     }
 
-    /// 关于 Tab：版本、简介、许可证、技术栈与仓库地址（可打开 / 可复制）。
+    /// 关于 Tab：版本、简介与仓库地址（地址可一键打开 / 复制）。
+    ///
+    /// 刻意只放三条信息：用户打开「关于」最想知道的就是这是什么、什么版本、去哪反馈，
+    /// 技术栈 / 许可证 / 理念这类内容放 README，不占设置页位置。
     fn about_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let version = format!("v{APP_VERSION}");
-        // 关闭按钮只隐藏不退出，关于页常被当“检查版本”入口，这里给足信息。
         let mut about_card = div()
             .flex()
             .flex_col()
@@ -1158,9 +1160,7 @@ impl RupixApp {
             .bg(rgb(0xFFFFFF))
             .child(div().text_sm().child(tr("about.title")))
             .child(info_row(&tr("about.version"), &version))
-            .child(info_row(&tr("about.desc"), &tr("about.desc_value")))
-            .child(info_row(&tr("about.license"), &tr("about.license_value")))
-            .child(info_row(&tr("about.stack"), &tr("about.stack_value")));
+            .child(info_row(&tr("about.desc"), &tr("about.desc_value")));
         // 仓库行：长地址允许收缩换行，右侧固定两个小按钮。
         let open_view = view.clone();
         about_card = about_card.child(
@@ -1229,16 +1229,7 @@ impl RupixApp {
                         ),
                 ),
         );
-        // 理念行放在第二张卡，视觉上把“是什么”与“是什么做的”分开。
-        div().flex().flex_col().gap_3().child(about_card).child(
-            div()
-                .p_3()
-                .rounded_md()
-                .bg(rgb(0xFFFFFF))
-                .text_xs()
-                .text_color(rgb(0x555555))
-                .child(tr("about.motto")),
-        )
+        about_card
     }
 }
 

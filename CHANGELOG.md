@@ -8,7 +8,7 @@
 
 ### Added
 
-- 设置页新增「关于」Tab：版本（取自 `Cargo.toml`）、简介、许可证、技术栈与仓库地址，
+- 设置页新增「关于」Tab：版本号（取自 `Cargo.toml`）、简介与仓库地址，
   支持一键打开仓库与复制链接
 - 设置页「通用」新增开机启动开关（`src/autostart.rs`）：Windows 写 `HKCU\...\CurrentVersion\Run`、
   macOS 写 `~/Library/LaunchAgents/com.launcher-rs.rupix.plist`、Linux 写 `~/.config/autostart/rupix.desktop`；

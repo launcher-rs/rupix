@@ -512,34 +512,6 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "A lightweight cross-platform screenshot tool built with Rust + rgpui"
             }
         }
-        "about.license" => {
-            if zh {
-                "许可证"
-            } else {
-                "License"
-            }
-        }
-        "about.license_value" => {
-            if zh {
-                "Apache-2.0（原文见仓库 LICENSE-APACHE）"
-            } else {
-                "Apache-2.0 (full text in the repository's LICENSE-APACHE)"
-            }
-        }
-        "about.stack" => {
-            if zh {
-                "技术栈"
-            } else {
-                "Built with"
-            }
-        }
-        "about.stack_value" => {
-            if zh {
-                "Rust 2024 · rgpui（界面 / 窗口 / 屏幕捕获）· ocr-rs（离线 OCR：PaddleOCR + MNN）"
-            } else {
-                "Rust 2024 · rgpui (UI / window / capture) · ocr-rs (offline OCR: PaddleOCR + MNN)"
-            }
-        }
         "about.repo" => {
             if zh {
                 "仓库地址"
@@ -566,13 +538,6 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "已复制仓库地址"
             } else {
                 "Repository URL copied"
-            }
-        }
-        "about.motto" => {
-            if zh {
-                "理念：看到 → 截取 → 留存。欢迎提 Issue / PR：https://github.com/launcher-rs/rupix/issues"
-            } else {
-                "Motto: See → Capture → Keep. Issues / PRs welcome: https://github.com/launcher-rs/rupix/issues"
             }
         }
         // —— OCR 模型卡（OCR Tab） ——
