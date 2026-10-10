@@ -1,0 +1,165 @@
+# 持续集成：push / PR / 手动触发，先静态检查再三平台构建冒烟。
+#
+# 两个 job：
+#   lint      —— Linux 上跑 `cargo fmt --check` + `cargo clippy -- -D warnings`（公共代码的格式与 lint）；
+#   build     —— 三平台 release 构建 → `--version/--help` 冒烟 → 单测 → 链接基线信息。
+#               Windows 额外先跑一次 `cargo clippy --release`：cfg(windows) 专属代码
+#               （剪贴板 / 注册表开机启动 / 控制台挂接）只有在 Windows 上才会被编译到，
+#               Linux 的 clippy 看不见它们。放同一 job 是为了复用 release 依赖编译结果，
+#               clippy 只重编工作区 crate，代价很小。
+#
+# 依赖装法与 release.yml 保持一致（bindgen 要 libclang，rgpui Linux 要 Wayland/X11 头文件），
+# 这里不发版、不打包，产物只用于冒烟，跑完即丢。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新提交会取消进行中的旧跑，省 runner 时长。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 静态检查：格式 + lint。放在 Linux 单跑，最快拿到“能不能合”的结论。
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # clippy 要完整编译一遍，系统依赖与构建一致；Linux 故意钉 22.04（glibc 基线只升不降）。
+      - name: 安装系统依赖（Linux）
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libclang-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libx11-xcb-dev libxcb1-dev \
+            libasound2-dev libudev-dev
+
+      - name: 格式检查（cargo fmt --check）
+        shell: bash
+        run: cargo fmt --check
+
+      - name: 静态检查（cargo clippy -- -D warnings）
+        shell: bash
+        run: cargo clippy -- -D warnings
+
+  # 构建 + 冒烟 + 单测：三平台并行，谁都不等谁；Linux/macOS 只是编译验证，基线信息随日志给出。
+  build:
+    name: build (${{ matrix.name }})
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x86_64
+          - os: ubuntu-22.04
+            name: linux-x86_64
+          - os: macos-latest
+            name: macos-aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # ocr-rs 经 bindgen 要用 libclang，Windows runner 默认没有，装一份 LLVM。
+      - name: 安装 LLVM（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath 'C:\Program Files\LLVM\bin\libclang.dll')) {
+            winget install -e --id LLVM.LLVM --silent --accept-source-agreements --accept-package-agreements
+          }
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
+      - name: 安装系统依赖（Linux）
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libclang-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libx11-xcb-dev libxcb1-dev \
+            libasound2-dev libudev-dev
+
+      - name: 安装 LLVM（macOS）
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install llvm || true
+          if [ -d /opt/homebrew/opt/llvm ]; then echo "LIBCLANG_PATH=/opt/homebrew/opt/llvm/lib" >> "$GITHUB_ENV"; fi
+          if [ -d /usr/local/opt/llvm ]; then echo "LIBCLANG_PATH=/usr/local/opt/llvm/lib" >> "$GITHUB_ENV"; fi
+
+      # Windows 专属代码的 lint：依赖与后面的 release 构建同 profile，可直接复用编译结果。
+      # 必须排在 cargo build --release 之前，先让 clippy 把依赖编出来，构建时就不用重来。
+      - name: 静态检查（cargo clippy --release，仅 Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cargo clippy --release -- -D warnings
+
+      - name: 构建（cargo build --release）
+        shell: bash
+        run: cargo build --release
+
+      # 冒烟：--version/--help 必须立刻正常退出。
+      # Windows 注意：release 构建带 windows_subsystem="windows"，是 GUI 子系统程序，
+      # pwsh 里 `& exe` 不等待退出也不写 $LASTEXITCODE，必须 Start-Process -Wait -PassThru
+      # 拿真实退出码（历史上曾因这个误判过冒烟结果）。
+      - name: 冒烟（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path -LiteralPath '.\target\release\rupix.exe').Path
+          foreach ($flag in '--version', '--help') {
+            $proc = Start-Process -FilePath $exe -ArgumentList $flag -NoNewWindow -Wait -PassThru
+            if ($proc.ExitCode -ne 0) { throw "冒烟失败：$flag（退出码 $($proc.ExitCode)）" }
+          }
+
+      - name: 冒烟（Linux/macOS）
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          ./target/release/rupix --version
+          ./target/release/rupix --help >/dev/null
+
+      # 单测复用 release 档依赖（同 profile 不重编），只重编工作区的测试目标。
+      # 用 --bins：examples 是历史 spike，不参与发版，也不该卡 CI。
+      - name: 单元测试（cargo test --release --bins）
+        shell: bash
+        run: cargo test --release --bins
+
+      # 链接基线信息：不作失败判定，只为发版时核对“最低可运行环境”留证据。
+      - name: glibc 基线（Linux，仅信息）
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          echo 'glibc 基线需求（最高三行）：'
+          objdump -T target/release/rupix | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -3
+
+      - name: 依赖库检查（macOS，仅信息）
+        if: runner.os == 'macOS'
+        shell: bash
+        run: otool -L target/release/rupix

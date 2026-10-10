@@ -28,6 +28,12 @@ on:
 permissions:
   contents: write
 
+# 发版串行：tag 发版与手动 latest 发版（或两次手动触发）同时跑会互相覆盖同名附件。
+# 故意 cancel-in-progress=false：跑到一半的发版不能被取消，宁可排队等上一个结束。
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   # 先建好目标 Release，各平台 job 只管往里传附件：早编完早发布，不用等最慢的。
   # 顺带算出本次要跑的矩阵（job 级 if 不支持 matrix，只能走 outputs 动态矩阵），
@@ -100,7 +106,7 @@ jobs:
             # 正式版本：git tag 已由 push 事件存在，这里只补上同名的 release。
             # 重复推同一个 tag（改代码后强制重打）时只补缺失的 release，不删已有附件、不碰 latest。
             if ! gh release view "$TAG" >/dev/null 2>&1; then
-              gh release create "$TAG" --title "Rupix 拾景 $TAG" --notes "版本发布 $TAG，三平台各两个包：常规版（解压即用，含外置 models/）与内嵌版（-bundled，模型打进二进制，单文件）。Windows 静态 CRT，免装运行库；Linux 基线 glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+ / Fedora 35+）。"
+              gh release create "$TAG" --title "Rupix 拾景 $TAG" --notes "版本发布 $TAG，三平台各两个包：常规版（解压即用，含外置 models/）与内嵌版（-bundled，模型打进二进制，单文件）。Windows 静态 CRT，免装运行库；Linux 基线 glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+ / Fedora 35+）。设置 → 通用提供「开机启动」开关（默认关闭，只写当前用户范围：Windows 注册表 / macOS LaunchAgents / Linux XDG autostart）。"
             fi
             exit 0
           fi
@@ -115,6 +121,7 @@ jobs:
 
           滚动更新：全平台触发删旧建新；单平台触发只替换该平台附件，不碰其他的。
           每个平台两个包：常规版 rupix-<平台>.zip（exe + 外置 models/，解压即用）；内嵌版 *-bundled.zip（模型打进二进制，单文件开箱即用，体积 +21MB）。
+          设置 → 通用提供「开机启动」开关（默认关闭，只写当前用户范围：Windows 注册表 / macOS LaunchAgents / Linux XDG autostart）。
           说明：Windows 为主力验证平台；Linux/macOS 为交叉尝试编译，未在真机完整验证，遇到问题欢迎提 Issue。
           Linux 基线：Ubuntu 22.04+ / Debian 12+ / Fedora 35+（glibc ≥ 2.35），更老系统请用源码编译。"
 
@@ -231,39 +238,8 @@ jobs:
           tar -czf "dist/rupix-${{ matrix.name }}.tar.gz" -C stage-regular .
           tar -czf "dist/rupix-${{ matrix.name }}-bundled.tar.gz" -C stage-bundled .
 
-      # 冒烟：二进制能启动（--version/--help 立刻退出，不碰 GUI），单测复用本 profile 已编好的依赖。
-      # 必须用 Start-Process -Wait -PassThru：发布档是 windows_subsystem="windows" 的 GUI 子系统程序，
-      # pwsh 的 `&` 对这类程序不等待退出、也不给 $LASTEXITCODE 赋值（保持 null），
-      # 于是 `if ($LASTEXITCODE -ne 0)` 恒为真 —— 直接调用哪怕成功退出也会误报冒烟失败。
-      # cargo 是控制台程序，不受此影响，仍按 $LASTEXITCODE 判断。
-      - name: 冒烟（Windows）
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          # 转绝对路径：Start-Process 按进程工作目录解析相对路径，与 PowerShell 当前位置未必一致。
-          $exe = (Resolve-Path -LiteralPath '.\pkg\rupix-regular.exe').Path
-          foreach ($flag in '--version', '--help') {
-            $proc = Start-Process -FilePath $exe -ArgumentList $flag -NoNewWindow -Wait -PassThru
-            if ($proc.ExitCode -ne 0) { throw "冒烟失败：$flag（退出码 $($proc.ExitCode)）" }
-          }
-          cargo test --profile '${{ needs.prepare.outputs.profile }}'
-          if ($LASTEXITCODE -ne 0) { throw '冒烟失败：cargo test' }
-
-      - name: 冒烟（Linux/macOS）
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          prof='${{ needs.prepare.outputs.profile }}'
-          ./pkg/rupix-regular --version
-          ./pkg/rupix-regular --help >/dev/null
-          cargo test --profile "$prof"
-          if [ "$(uname)" = "Darwin" ]; then
-            otool -L pkg/rupix-regular
-          else
-            echo 'glibc 基线需求（最高三行）：'
-            objdump -T pkg/rupix-regular | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -3
-          fi
-
+      # 冒烟（--version/--help 启动检查、cargo test、glibc 基线）已移到 ci.yml：
+      # push/PR 都会先跑一遍，发版流程只管编译 + 上传，不再重复等待这些检查。
       # 本平台编完立刻上传（--clobber 覆盖同名旧附件，支持单独重跑本 job）。
       - name: 发布附件（Windows）
         if: runner.os == 'Windows'
