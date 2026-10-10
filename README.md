@@ -31,6 +31,8 @@
 - [x] 托盘常驻（启动即隐藏到托盘：区域截图 / 全屏截图 / 屏幕取色 / 窗口截图 / 打开图片编辑 / 打开设置 / 退出）
 - [x] 命令行截图（`rupix -f` 全屏 / `rupix -r x,y,w,h` 区域，直存 PNG，可 `--copy` 进剪贴板）
 - [x] OCR 文字识别（离线 PP-OCRv5 mobile，中英文；预览窗口点「识别」，后台识别不卡界面，结果进面板可复制文本 / 落为文字标注，需备好模型三件套）
+- [x] 开机启动（设置 → 通用：登录后自动在后台驻留托盘，不弹窗口；Windows 注册表 `Run` / macOS LaunchAgents / Linux XDG autostart，只写当前用户范围，无需管理员权限）
+- [x] 设置页「关于」（版本 / 简介 / 许可证 / 技术栈 / 仓库地址，可一键打开或复制）
 
 ## 技术栈
 
@@ -58,7 +60,8 @@ rupix/
 ├── build.rs             Windows exe 图标嵌入
 ├── src/
 │   ├── main.rs          程序入口（设置窗口默认隐藏到托盘）
-│   ├── app.rs           设置窗口：热键录制、截图入口、保存历史
+│   ├── app.rs           设置窗口：截图入口、热键录制、保存历史、开机启动、关于
+│   ├── autostart.rs     开机启动（Win 注册表 Run / macOS LaunchAgents / Linux XDG autostart）
 │   ├── capture.rs       截图核心（推流取首帧）
 │   ├── overlay.rs       区域选择浮层与窗口拾取浮层（冻结帧 + 拖拽框选 / 悬停高亮）
 │   ├── picker.rs        屏幕取色浮层（放大镜 + 十字线，点击复制 HEX）
@@ -69,6 +72,7 @@ rupix/
 │   ├── hotkey.rs        全局热键注册与持久化
 │   ├── cli.rs           命令行截图（全屏 / 区域直存 PNG，不进图形界面）
 │   ├── ocr.rs           离线 OCR（PP-OCRv5 mobile，识别底图并落成文字标注）
+│   ├── i18n.rs          界面语言（中英内置，外部 lang-<代码>.txt 扩展）
 │   └── tray.rs          托盘常驻与菜单
 ├── Cargo.toml           包配置与依赖（含 release 优化）
 ├── README.md            项目说明（本文件）
@@ -99,6 +103,12 @@ cargo test
 > OCR 构建前提：本机需安装 LLVM（bindgen 要用 libclang）。
 > MSVC 头文件解析参数已由 `.cargo/config.toml` 自动带上，无需手动配环境变量；
 > 若 LLVM 不在默认路径，再另行设置 `LIBCLANG_PATH` 指向其 `bin` 目录（改完重开终端）。
+>
+> 若在 **PowerShell 7（pwsh）会话里**构建，ocr-rs 可能报 `Failed to extract …zip`：pwsh 会把
+> `C:\Program Files\PowerShell\7\Modules` 并进 `PSModulePath`，Windows PowerShell 5.1 随后优先加载
+> 7 的 `Microsoft.PowerShell.Archive`，被执行策略拒绝，构建脚本用的 `Expand-Archive` 就不可用了。
+> 解决：换 cmd / 独立 PowerShell 5.1 窗口构建，或预置解压缓存
+> `%USERPROFILE%\.cargo\registry\src\<镜像名>\ocr-rs-<版本>\3rd_party\prebuilt\mnn-dev-windows-x86_64\`（放 `lib/` + `include/`，构建脚本优先读它）。
 >
 > OCR 模型（PP-OCRv5 mobile 三件套，约 21MB）已进仓库（`assets/ocr-models/`），构建脚本会自动同步到输出目录旁的 `models/`（开发/发版默认位置，开箱即用）。
 > 查找顺序：`RUPIX_OCR_MODELS` 环境变量 > 设置页自定义目录 > exe 旁 `models/` > 工作目录 `models/`/`temp/ocr-models/` > 包根 `temp/`/`assets/`。
@@ -131,6 +141,18 @@ cargo build --profile size
 > Rupix 的主链路恰好全是 debug 最怕的 CPU 密集像素运算：
 > 一张 4K 冻结帧约 33MB，要走推流取帧 → PNG 落盘 → 解码（debug 下单次约半秒）→ RGBA→BGRA 逐像素转换 → 全屏浮层渲染 → 裁剪 / 马赛克 / 烧录导出。
 > 这些循环在无优化下每个像素都有边界检查与函数调用开销，也无法向量化，比 release 慢一到两个数量级，所以拖拽选区、放大镜、取色都会掉帧。只用 `cargo run` 验证逻辑，体验务必用 release 包。
+
+## 持续集成（GitHub Actions）
+
+`ci` 工作流在推 `main`、开 PR、手动触发时运行，先出「能不能合」的结论，再验证三平台：
+
+- **fmt + clippy**（Linux）：`cargo fmt --check` + `cargo clippy -- -D warnings`；
+- **build 矩阵**（Windows / Linux / macOS，需上面 lint 通过）：Windows 先跑一次
+  `cargo clippy --release`（只有 Windows 才编译到的专属代码，如剪贴板 / 注册表开机启动）
+  → `cargo build --release` → `--version` / `--help` 冒烟 → `cargo test --release --bins`
+  → Linux 打印 glibc 基线、macOS 打印 `otool -L`（仅信息，不作失败判定）。
+
+同分支新提交会取消进行中的旧跑；发版流程（下节）不再重复冒烟，只负责编译 + 上传。
 
 ## 发版（GitHub Actions）
 

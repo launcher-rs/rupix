@@ -4,7 +4,23 @@
 
 ## [Unreleased]
 
-- 见 `docs/ROADMAP.md` 的 0.2 规划（JSON 配置统一、开机自启）。
+- 见 `docs/ROADMAP.md` 的 0.2 规划（JSON 配置统一；开机自启已在本版本落地，见下）。
+
+### Added
+
+- 设置页新增「关于」Tab：版本（取自 `Cargo.toml`）、简介、许可证、技术栈与仓库地址，
+  支持一键打开仓库与复制链接
+- 设置页「通用」新增开机启动开关（`src/autostart.rs`）：Windows 写 `HKCU\...\CurrentVersion\Run`、
+  macOS 写 `~/Library/LaunchAgents/com.launcher-rs.rupix.plist`、Linux 写 `~/.config/autostart/rupix.desktop`；
+  只写当前用户范围，无需管理员权限；状态实时读取系统登记，与任务管理器 / 系统设置的改动保持一致
+- 新增 `ci` 工作流（push `main` / PR / 手动）：`cargo fmt --check` + `cargo clippy -- -D warnings`
+  → 三平台 `cargo build --release` → `--version` / `--help` 冒烟 → `cargo test --release --bins`
+  → glibc 基线与 `otool -L` 信息输出
+
+### Changed
+
+- 发版工作流加串行并发控制（`concurrency: release`，不取消进行中的发版），
+  避免 tag 发版与手动 `latest` 发版同时跑互相覆盖附件；原发版流程里的冒烟步骤整体迁到 `ci`
 
 ### Fixed
 
