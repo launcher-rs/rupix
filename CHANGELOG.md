@@ -24,6 +24,10 @@
 
 ### Fixed
 
+- Windows：开机启动开关打开后立刻又显示「已关闭」——`autostart::enabled()` 读回 REG_SZ 时
+  数据带结尾 NUL（`RegGetValueW` 对 REG_SZ 连终止符一起返回），`from_utf16_lossy` 把它变成
+  `'\0'` 字符后 `trim_matches('"')` 连引号都剥不掉，比对恒不相等。现在解码前先把尾部 NUL
+  剥干净（`decode_reg_sz`），并补了对应单测
 - Linux：区域截图看不到遮罩层与选区框。Rupix 侧把两个全屏浮层（`overlay.rs` 选区层、
   `picker.rs` 取色层）的 `window_background` 从 `Transparent` 改为 `Opaque` —— 它们铺的是
   一张冻结的整屏截图，本来就不需要窗口级透明；配合 rgpui 侧 X11 的 visual 选择修复

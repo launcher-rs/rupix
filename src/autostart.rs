@@ -100,13 +100,58 @@ mod platform {
             // 文件不存在 = 没开过；其他错误一律按未开启处理，不阻断设置页。
             return false;
         }
-        // 字节数 → UTF-16 切片（末尾自带 0，转字符串时去掉）。
+        // 字节数 → UTF-16 切片，交给 decode_reg_sz 剥掉结尾 NUL 再转字符串。
         let units = &buf[..((bytes as usize / 2).min(buf.len()))];
-        let stored = String::from_utf16_lossy(units);
+        let stored = decode_reg_sz(units);
         // 我们写入时带引号，比对前把引号剥掉，大小写不敏感（Windows 路径特性）。
         stored
             .trim_matches('"')
             .eq_ignore_ascii_case(&exe.to_string_lossy())
+    }
+
+    /// 把 RegGetValueW 读回的 REG_SZ UTF-16 数据解码成字符串。
+    ///
+    /// `RegGetValueW` 对 REG_SZ 返回的数据是**连结尾 NUL 一起计入字节数**的，
+    /// 必须先剔干净：`from_utf16_lossy` 会把 U+0000 原样变成 `'\0'` 字符，
+    /// 之后 `trim_matches('"')` 从尾部遇到 `'\0'` 就停，连引号都剥不掉，
+    /// 比对恒不相等——开关刚打开就显示「已关闭」。
+    fn decode_reg_sz(units: &[u16]) -> String {
+        // 切片没有 trim_end_matches，手动找最后一个非 NUL 单元的位置；
+        // 全是 NUL（空值）时按空串处理。
+        let end = units
+            .iter()
+            .rposition(|unit| *unit != 0)
+            .map_or(0, |pos| pos + 1);
+        String::from_utf16_lossy(&units[..end])
+    }
+
+    #[cfg(test)]
+    mod tests {
+        //! Windows 自启动单测：只测纯字符串解码逻辑（注册表读写不进单测）。
+
+        use super::decode_reg_sz;
+
+        /// 模拟 RegGetValueW 读回的数据（带引号 + 结尾 NUL），
+        /// 解码后应能与裸路径正常比对。
+        #[test]
+        fn decode_reg_sz_strips_quotes_and_trailing_nul() {
+            let raw: Vec<u16> = "\"C:\\Program Files\\rupix.exe\"\0"
+                .encode_utf16()
+                .collect();
+            // 结尾 NUL 先被剥掉，trim_matches('"') 才能把两侧引号都去掉。
+            assert!(
+                decode_reg_sz(&raw)
+                    .trim_matches('"')
+                    .eq_ignore_ascii_case("c:\\program files\\rupix.exe")
+            );
+        }
+
+        /// 无引号登记 + 连续多个 NUL 的数据也应被正确剥离。
+        #[test]
+        fn decode_reg_sz_handles_unquoted_and_multi_nul() {
+            let raw: Vec<u16> = "C:\\a\\rupix.exe\0\0".encode_utf16().collect();
+            assert_eq!(decode_reg_sz(&raw), "C:\\a\\rupix.exe");
+        }
     }
 
     /// 写入或删除 Run 键中的自启动值。
