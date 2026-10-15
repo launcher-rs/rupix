@@ -10,9 +10,13 @@ use ab_glyph::{Font, FontVec, PxScale, ScaleFont as _, point};
 use image::{DynamicImage, ImageFormat as ImgFormat, Rgba, RgbaImage};
 
 use crate::{
-    i18n::{tr, tr_fmt},
+    i18n::tr,
     shapes::{AnnoColor, PixelRect, Shape},
 };
+// `tr_fmt` 只出现在 Windows 剪贴板分支里，非 Windows 走独立实现用不到，
+// 按平台引入，否则 Linux/macOS 构建会报 unused import（`-D warnings` 下直接失败）。
+#[cfg(target_os = "windows")]
+use crate::i18n::tr_fmt;
 
 /// 文字导出时的默认字号（图片像素）。
 pub const DEFAULT_TEXT_SIZE: f32 = 22.0;
@@ -73,6 +77,10 @@ pub fn copy_png_to_clipboard(cx: &mut rgpui::App, png: &[u8]) -> Result<(), Stri
 ///
 /// Word / 画图等优先认 CF_DIB，直接给 PNG（`PNG` 注册格式）部分旧程序认不出，
 /// 因此双格式复制时同时提供 DIB，兼容性最好。
+///
+/// 生产代码只在 Windows 剪贴板路径里调用；同时在测试里跨平台编译，
+/// 保证 Linux / macOS CI 也能跑 DIB 布局单测（否则非 Windows 构建报 dead_code）。
+#[cfg(any(target_os = "windows", test))]
 fn png_to_dib_bytes(png: &[u8]) -> Option<Vec<u8>> {
     // 先解码为 RGBA，再逐像素转 BGRA 并上下翻转。
     let img = image::load_from_memory(png).ok()?.into_rgba8();
@@ -107,6 +115,9 @@ fn png_to_dib_bytes(png: &[u8]) -> Option<Vec<u8>> {
 ///
 /// 布局：pFiles(4) + pt.x(4) + pt.y(4) + fNC(4) + fWide(4) = 20 字节头，
 /// 之后是 UTF-16 文件路径（单 `\0` 分隔，末尾双 `\0` 结束）。
+///
+/// 与 [`png_to_dib_bytes`] 同理：生产只在 Windows 用，测试里跨平台编译。
+#[cfg(any(target_os = "windows", test))]
 fn hdrop_bytes(path: &Path) -> Option<Vec<u8>> {
     // 路径转 UTF-16（Windows 用系统编码，非 Windows 用 lossy 兜底，单元测试可跑）。
     #[cfg(target_os = "windows")]

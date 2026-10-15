@@ -186,7 +186,7 @@ mod platform {
         let (Ok(text), Ok(exe)) = (std::fs::read_to_string(path), exe_path()) else {
             return false;
         };
-        text.contains(&exe.to_string_lossy())
+        text.contains(&*exe.to_string_lossy())
     }
 
     /// 把路径塞进 `<string>` 前做最小 XML 转义（路径里出现 `& < >` 也不至于写出坏文件）。
@@ -262,21 +262,22 @@ mod platform {
             Ok(())
         } else {
             // 先卸载再删文件；卸载失败（没加载过）无所谓。
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if text.contains(&exe.to_string_lossy()) {
-                    let uid = std::process::Command::new("id")
-                        .arg("-u")
-                        .output()
-                        .ok()
-                        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-                        .filter(|uid| !uid.is_empty());
-                    if let Some(uid) = uid {
-                        launchctl(&[
-                            "bootout",
-                            &format!("gui/{uid}"),
-                            &path.display().to_string(),
-                        ]);
-                    }
+            // 只有文件里登记的确实是当前 exe 时才 bootout，避免误停别的程序的同名项。
+            if let Ok(text) = std::fs::read_to_string(&path)
+                && text.contains(&*exe.to_string_lossy())
+            {
+                let uid = std::process::Command::new("id")
+                    .arg("-u")
+                    .output()
+                    .ok()
+                    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+                    .filter(|uid| !uid.is_empty());
+                if let Some(uid) = uid {
+                    launchctl(&[
+                        "bootout",
+                        &format!("gui/{uid}"),
+                        &path.display().to_string(),
+                    ]);
                 }
             }
             remove_if_exists(&path)
@@ -325,7 +326,7 @@ mod platform {
         let (Ok(text), Ok(exe)) = (std::fs::read_to_string(path), exe_path()) else {
             return false;
         };
-        text.contains(&exe.to_string_lossy())
+        text.contains(&*exe.to_string_lossy())
     }
 
     /// 生成 `.desktop` 内容（Exec 值含空格要加引号，见桌面项规范）。
