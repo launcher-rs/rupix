@@ -91,7 +91,7 @@ pub fn begin_capture(
                         w: img_w,
                         h: img_h,
                     };
-                    let (_, auto_note) = finish_capture(cx, &preview);
+                    let (_, auto_note) = finish_capture(state, cx, &preview);
                     let msg = tr_fmt(
                         "cap.full_done",
                         &[

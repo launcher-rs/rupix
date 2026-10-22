@@ -725,6 +725,13 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "Edit image…"
             }
         }
+        "btn.edit_last" => {
+            if zh {
+                "编辑最近一张"
+            } else {
+                "Edit last shot"
+            }
+        }
         "image.pick_prompt" => {
             if zh {
                 "选择要编辑的图片"
@@ -737,6 +744,13 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "所选文件不是有效图片"
             } else {
                 "Selected file is not a valid image"
+            }
+        }
+        "image.no_recent" => {
+            if zh {
+                "还没有可编辑的截图，先截一张吧"
+            } else {
+                "No recent screenshot to edit yet"
             }
         }
         "app.tips" => {
@@ -810,6 +824,13 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "Edit image…"
             }
         }
+        "tray.edit_last" => {
+            if zh {
+                "编辑最近一张"
+            } else {
+                "Edit last shot"
+            }
+        }
         "tray.show" => {
             if zh {
                 "打开设置"
@@ -855,7 +876,7 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
         }
         "behavior.open_editor.note" => {
             if zh {
-                "关闭后截完只在右下角闪一下保存提示，不弹预览窗"
+                "关闭后截完只在右下角闪一下；要补标注用「编辑最近一张」"
             } else {
                 "When off, a short toast reports the result; annotate later via the tray menu"
             }

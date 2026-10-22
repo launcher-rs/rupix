@@ -15,6 +15,9 @@
   不抢焦点、经 `WDA_EXCLUDEFROMCAPTURE` 排除出抓屏），交代「已保存（并复制）」与文件名
 - 截图收尾统一到 `app::finish_capture`（区域框选与全屏两条路径同一处判断）：
   自动保存 → 按设置复制 → 打开编辑窗或闪提示；`autosave_screenshot` 负责保存后写剪贴板
+- 新增「编辑最近一张」入口（设置页截图 Tab 与托盘菜单）：截图收尾时在进程内记下最近一张
+  （`RupixApp::last_preview`，不写盘），关掉「截图后打开编辑窗」后可一键重开标注；
+  没有截图或文件已删时入口置灰 / 只回写状态栏提示
 - 设置页新增「关于」Tab：版本号（取自 `Cargo.toml`）、简介与仓库地址，
   支持一键打开仓库与复制链接
 - 设置页「通用」新增开机启动开关（`src/autostart.rs`）：Windows 写 `HKCU\...\CurrentVersion\Run`、

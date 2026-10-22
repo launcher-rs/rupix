@@ -260,7 +260,7 @@ impl SelectView {
                 // 收尾里会按设置开新窗口，放到主实体更新内做，`cx` 才是主视图上下文。
                 main.update(cx, |state, cx| {
                     state.capturing = false;
-                    let (_, auto_note) = finish_capture(cx, &preview);
+                    let (_, auto_note) = finish_capture(state, cx, &preview);
                     let msg = tr_fmt(
                         "cap.cropped",
                         &[

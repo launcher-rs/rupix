@@ -184,12 +184,14 @@ pub fn autosave_screenshot(src: &std::path::Path, cx: &mut rgpui::App) -> Option
 /// 一处判断，否则迟早出现「区域弹窗、全屏不弹」这种分叉。
 ///
 /// # 参数
+/// - `state`: 主视图（记下「最近一张」，供「编辑最近一张」入口用）。
 /// - `cx`: 主视图上下文（写剪贴板、开窗口都要）。
 /// - `preview`: 刚截到 / 裁好的原图（临时文件路径 + 尺寸）。
 ///
 /// # 返回
 /// 自动保存后的预览（保存失败时仍是临时文件）与状态行提示语。
 pub fn finish_capture(
+    state: &mut RupixApp,
     cx: &mut Context<RupixApp>,
     preview: &PreviewImage,
 ) -> (PreviewImage, String) {
@@ -208,6 +210,9 @@ pub fn finish_capture(
         ),
         None => (preview.clone(), false, tr("cap.auto_fail")),
     };
+    // 无论弹不弹编辑窗都记下最近一张：关掉编辑窗后，「编辑最近一张」是重新打开的入口。
+    // 这里直接改 `state`，不嵌套 `update`：两条调用路径都已在实体租借内。
+    state.last_preview = Some(preview.clone());
     // 自动保存失败时仍然打开编辑窗：此时只有临时文件，让用户自己另存一份才安全。
     if load_open_editor() || !saved_ok {
         open_viewer(cx.entity(), cx, preview.clone());
@@ -345,7 +350,7 @@ impl ModelFileKind {
     }
 }
 
-/// 截图入口动作（设置页截图 Tab 的四个按钮共用分发）。
+/// 截图入口动作（设置页截图 Tab 的入口按钮共用分发）。
 #[derive(Clone, Copy)]
 enum EntryAction {
     /// 区域截图。
@@ -356,6 +361,8 @@ enum EntryAction {
     Picker,
     /// 打开本地图片编辑。
     OpenImage,
+    /// 重新编辑最近一张截图（截完没弹编辑窗时的补救入口）。
+    EditLast,
 }
 
 /// 截图行为开关动作（截图 Tab 的两行开关共用分发）。
@@ -421,6 +428,11 @@ pub struct RupixApp {
     auto_copy: bool,
     /// 截图后是否打开编辑窗（截图 Tab 开关；关闭时只闪保存提示）。
     open_editor: bool,
+    /// 最近一张截图（进程内保存，供「编辑最近一张」重开编辑窗）。
+    ///
+    /// 不写盘：它只是自动保存产物的路径，跨进程记下来反而会留下
+    /// 「重启后指向一个已被删掉的文件」这种死记录。
+    last_preview: Option<PreviewImage>,
     /// 最近保存的文件（路径 + 提示语，最多保留 10 条）。
     recents: Vec<(PathBuf, String)>,
     /// 开机启动当前状态（通用 Tab 开关的显示与切换依据，启动时读真实状态）。
@@ -457,6 +469,7 @@ impl RupixApp {
             // 两个截图行为开关直接取持久化值：默认「自动复制开、打开编辑窗关」。
             auto_copy: load_auto_copy(),
             open_editor: load_open_editor(),
+            last_preview: None,
             recents: Vec::new(),
             // 开机启动状态实时取自注册表 / 自启动文件，避免与系统实际状态脱节。
             autostart: autostart::is_enabled(),
@@ -679,6 +692,33 @@ impl RupixApp {
         self.report_behavior("behavior.open_editor.title", enabled, cx);
     }
 
+    /// 是否有可编辑的「最近一张截图」（入口按钮置灰用）。
+    ///
+    /// 顺手校验文件还在：用户可能在资源管理器里把它删了。
+    pub fn has_last_preview(&self) -> bool {
+        self.last_preview
+            .as_ref()
+            .is_some_and(|preview| preview.path.is_file())
+    }
+
+    /// 把「最近一张截图」重新打开进编辑窗（设置页按钮与托盘菜单共用）。
+    ///
+    /// 没有最近一张（或文件已被删掉）时只在状态栏提示，不开空窗口。
+    pub fn open_last_for_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(preview) = self.last_preview.clone() else {
+            self.set_status(&tr("image.no_recent"), cx);
+            return;
+        };
+        if !preview.path.is_file() {
+            // 文件没了就别留着这条记录，免得入口一直亮着却点不开。
+            self.last_preview = None;
+            self.set_status(&tr("image.no_recent"), cx);
+            cx.notify();
+            return;
+        }
+        open_viewer(cx.entity(), cx, preview);
+    }
+
     /// 开关切换后的状态栏回执（「标题：已开启 / 已关闭」）。
     fn report_behavior(&mut self, title_key: &str, on: bool, cx: &mut Context<Self>) {
         let state = tr(if on { "behavior.on" } else { "behavior.off" });
@@ -758,17 +798,22 @@ impl RupixApp {
             )
     }
 
-    /// 截图入口按钮（截图 Tab，截取中整行置灰，颜色区分种类）。
+    /// 截图入口按钮（截图 Tab，截取中或条件不满足时置灰，颜色区分种类）。
+    ///
+    /// # 参数
+    /// - `enabled`: 额外可用条件（如「编辑最近一张」要先有截图）；`false` 时置灰且不响应点击。
     fn entry_button(
         &self,
         cx: &mut Context<Self>,
         id: &'static str,
         label: String,
         color: u32,
+        enabled: bool,
         action: EntryAction,
     ) -> impl IntoElement {
         let view = cx.entity();
-        let capturing = self.capturing;
+        // 截取中一律禁用，避免重复发起；其余条件由调用方给。
+        let active = enabled && !self.capturing;
         div()
             .id(id)
             .w_full()
@@ -778,15 +823,19 @@ impl RupixApp {
             .text_sm()
             .text_center()
             .cursor_pointer()
-            .bg(if capturing { rgb(0xC0C0C0) } else { rgb(color) })
+            .bg(if active { rgb(color) } else { rgb(0xC0C0C0) })
             .text_color(rgb(0xFFFFFF))
             .child(label)
             .on_click(move |_, window, cx| {
+                if !active {
+                    return;
+                }
                 view.update(cx, |this, cx| match action {
                     EntryAction::Region => this.begin_region(window, cx),
                     EntryAction::Full => this.begin_full(window, cx),
                     EntryAction::Picker => this.begin_picker(window, cx),
                     EntryAction::OpenImage => this.open_image_for_edit(window, cx),
+                    EntryAction::EditLast => this.open_last_for_edit(cx),
                 });
             })
     }
@@ -833,7 +882,7 @@ impl RupixApp {
             .child(div().text_xs().text_color(rgb(0x555555)).child(note))
     }
 
-    /// 截图 Tab：截图入口按钮（两列两行，各 200px 宽） + 截图行为选项 + 使用提示。
+    /// 截图 Tab：截图入口按钮（两列两行，各 200px 宽） + 编辑最近一张 + 截图行为选项 + 使用提示。
     ///
     /// 入口按钮排成 2×2 而不是竖着一行一个：右侧内容区只有约 410px 宽，
     /// 竖排四个按钮会把下面的「截图行为」挤出可视区，需要滚动才能看到。
@@ -851,6 +900,7 @@ impl RupixApp {
                         "rupix-btn-region",
                         tr("btn.region"),
                         0x1E90FF,
+                        true,
                         EntryAction::Region,
                     )))
                     .child(div().w(px(200.)).child(self.entry_button(
@@ -858,6 +908,7 @@ impl RupixApp {
                         "rupix-btn-full",
                         tr("btn.full"),
                         0x107C10,
+                        true,
                         EntryAction::Full,
                     ))),
             )
@@ -870,6 +921,7 @@ impl RupixApp {
                         "rupix-btn-picker",
                         tr("btn.picker"),
                         0xFF8C00,
+                        true,
                         EntryAction::Picker,
                     )))
                     .child(div().w(px(200.)).child(self.entry_button(
@@ -877,9 +929,20 @@ impl RupixApp {
                         "rupix-btn-open-image",
                         tr("btn.open_image"),
                         0x6A5ACD,
+                        true,
                         EntryAction::OpenImage,
                     ))),
             )
+            // 编辑最近一张：关掉「截图后打开编辑窗」后，这是找回上一张直接标注的入口。
+            // 还没有截图（或文件已被删）时置灰，避免点开一个空窗。
+            .child(div().w(px(408.)).child(self.entry_button(
+                cx,
+                "rupix-btn-edit-last",
+                tr("btn.edit_last"),
+                0x008B8B,
+                self.has_last_preview(),
+                EntryAction::EditLast,
+            )))
             // 截图行为：截完自动复制 / 自动弹编辑窗，两项都即时持久化。
             .child(
                 div()

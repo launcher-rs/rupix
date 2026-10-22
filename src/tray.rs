@@ -15,6 +15,8 @@ const MENU_FULL: &str = "capture_full";
 const MENU_PICKER: &str = "pick_color";
 /// 打开图片编辑菜单项编号。
 const MENU_OPEN_IMAGE: &str = "open_image";
+/// 编辑最近一张截图菜单项编号。
+const MENU_EDIT_LAST: &str = "edit_last";
 /// 显示设置窗口菜单项编号。
 const MENU_SHOW: &str = "show_window";
 /// 退出菜单项编号。
@@ -51,6 +53,11 @@ pub fn setup_tray(cx: &mut App, main_win: WindowHandle<RupixApp>, main: Entity<R
             label: tr("tray.open_image").into(),
             id: MENU_OPEN_IMAGE.into(),
         },
+        // 关掉「截图后打开编辑窗」后，托盘这里是找回上一张直接标注的快捷入口。
+        TrayMenuItem::Action {
+            label: tr("tray.edit_last").into(),
+            id: MENU_EDIT_LAST.into(),
+        },
         TrayMenuItem::Action {
             label: tr("tray.show").into(),
             id: MENU_SHOW.into(),
@@ -75,6 +82,8 @@ pub fn setup_tray(cx: &mut App, main_win: WindowHandle<RupixApp>, main: Entity<R
         MENU_FULL => trigger_capture(cx, main_win, main.clone(), true),
         MENU_PICKER => trigger_picker(cx, main_win, main.clone()),
         MENU_OPEN_IMAGE => open_image_for_edit_in_app(main.clone(), cx),
+        // 重新打开最近一张截图：不用再走文件对话框挑图。
+        MENU_EDIT_LAST => main.update(cx, |view, cx| view.open_last_for_edit(cx)),
         MENU_SHOW => show_main_window(cx, main_win),
         MENU_QUIT => cx.quit(),
         _ => {}
