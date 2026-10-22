@@ -7,10 +7,11 @@
 
 use crate::{
     autostart,
-    capture::{begin_capture, begin_picker},
+    capture::{begin_capture, begin_picker, cap_log},
+    export,
     hotkey::{HotkeyKind, apply_global_hotkey, hotkey_value_to_string, save_hotkey_string},
     i18n::{available_langs, lang, set_lang, tr, tr_fmt},
-    ocr,
+    ocr, toast,
     viewer::{open_viewer, preview_from_path},
 };
 use rgpui::{
@@ -24,6 +25,12 @@ use std::path::PathBuf;
 
 /// 默认保存目录的配置文件名（与程序放同一目录，参考热键配置）。
 const SAVE_DIR_FILE: &str = "rupix-savedir.txt";
+
+/// 「截图后自动复制到剪贴板」开关的配置文件名（同目录，内容为 `1` / `0`）。
+const AUTO_COPY_FILE: &str = "rupix-shot-autocopy.txt";
+
+/// 「截图后打开编辑窗」开关的配置文件名（同目录，内容为 `1` / `0`）。
+const OPEN_EDITOR_FILE: &str = "rupix-shot-openeditor.txt";
 
 /// 项目仓库地址（关于页展示、打开与复制共用）。
 const REPO_URL: &str = "https://github.com/launcher-rs/rupix";
@@ -60,13 +67,21 @@ pub fn default_save_dir() -> PathBuf {
     std::env::temp_dir()
 }
 
+/// 单个配置文件（保存目录 / 截图行为开关）的完整路径。
+///
+/// 优先与程序放在同一目录（重装不丢）；取不到程序路径时回退系统临时目录。
+fn setting_path(file: &str) -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(file)))
+        .unwrap_or_else(|| std::env::temp_dir().join(file))
+}
+
 /// 读取用户配置的截图默认保存目录；未配置或目录已失效时回退到系统默认。
 pub fn load_save_dir() -> PathBuf {
     // 配置与程序放在同一目录，重装也不会丢；目录被删/不可用则回退默认。
-    let custom = std::env::current_exe()
+    let custom = std::fs::read_to_string(setting_path(SAVE_DIR_FILE))
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(SAVE_DIR_FILE)))
-        .and_then(|path| std::fs::read_to_string(path).ok())
         .map(|text| PathBuf::from(text.trim()))
         .filter(|dir| !dir.as_os_str().is_empty() && dir.is_dir());
     custom.unwrap_or_else(default_save_dir)
@@ -77,23 +92,71 @@ pub fn load_save_dir() -> PathBuf {
 /// # 参数
 /// - `dir`: 用户在目录对话框中选中的真实目录。
 pub fn store_save_dir(dir: &std::path::Path) {
-    // 优先放在程序所在目录，极端情况回退到系统临时目录。
-    let path = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(SAVE_DIR_FILE)))
-        .unwrap_or_else(|| std::env::temp_dir().join(SAVE_DIR_FILE));
-    let _ = std::fs::write(path, dir.to_string_lossy().as_ref());
+    let _ = std::fs::write(setting_path(SAVE_DIR_FILE), dir.to_string_lossy().as_ref());
+}
+
+/// 解析布尔开关的文件内容：`1` / `true` / `on` 为开，`0` / `false` / `off` 为关。
+///
+/// 手改出错、空文件等无法识别的内容一律取默认值，不让配置问题影响截图流程。
+fn parse_flag(text: &str, default: bool) -> bool {
+    match text.trim().to_lowercase().as_str() {
+        "1" | "true" | "on" => true,
+        "0" | "false" | "off" => false,
+        _ => default,
+    }
+}
+
+/// 读取布尔开关；文件不存在时用 `default`（首次运行即默认行为）。
+fn load_flag(file: &str, default: bool) -> bool {
+    std::fs::read_to_string(setting_path(file))
+        .map(|text| parse_flag(&text, default))
+        .unwrap_or(default)
+}
+
+/// 持久化布尔开关：写 `1` / `0`（写入失败仅忽略，下次启动回到默认值）。
+fn store_flag(file: &str, value: bool) {
+    let _ = std::fs::write(setting_path(file), if value { "1" } else { "0" });
+}
+
+/// 读取「截图后自动复制到剪贴板」设置（默认开：截完直接 `Ctrl+V` 就能用）。
+pub fn load_auto_copy() -> bool {
+    load_flag(AUTO_COPY_FILE, true)
+}
+
+/// 持久化「截图后自动复制到剪贴板」设置（写入失败仅忽略，不阻断截图流程）。
+///
+/// # 参数
+/// - `enabled`: 是否在截图保存后自动写剪贴板。
+pub fn store_auto_copy(enabled: bool) {
+    store_flag(AUTO_COPY_FILE, enabled);
+}
+
+/// 读取「截图后打开编辑窗」设置（默认关：截完只闪一下提示，需要时再手动编辑）。
+pub fn load_open_editor() -> bool {
+    load_flag(OPEN_EDITOR_FILE, false)
+}
+
+/// 持久化「截图后打开编辑窗」设置（写入失败仅忽略，不阻断截图流程）。
+///
+/// # 参数
+/// - `enabled`: 是否在截图保存后自动打开编辑窗。
+pub fn store_open_editor(enabled: bool) {
+    store_flag(OPEN_EDITOR_FILE, enabled);
 }
 
 /// 截图自动保存：刚截到的原图先存一份到默认保存目录（时间戳命名，天然不重名）。
 ///
+/// 保存成功后按设置自动复制到剪贴板（见 [`load_auto_copy`]）：不需要标注的用户
+/// 截完直接 `Ctrl+V` 就能粘贴，省掉「先开预览窗、再点复制」这一步。
+///
 /// # 参数
 /// - `src`: 刚截到/裁好的原图路径（临时文件）。
+/// - `cx`: 应用上下文（跨平台写图片剪贴板要用；Windows 走双格式直写，不依赖它）。
 ///
 /// # 返回
-/// 成功返回新路径（viewer 用它做预览源，之后的手动保存会另存新文件）；
+/// 成功返回新路径与「是否已复制到剪贴板」（viewer 用路径做预览源，之后的手动保存会另存新文件）；
 /// 失败返回 `None`（调用方回退用临时文件，不阻断截图流程）。
-pub fn autosave_screenshot(src: &std::path::Path) -> Option<PathBuf> {
+pub fn autosave_screenshot(src: &std::path::Path, cx: &mut rgpui::App) -> Option<(PathBuf, bool)> {
     // 目录被用户删掉时尝试重建，重建失败则放弃自动保存。
     let dir = load_save_dir();
     if std::fs::create_dir_all(&dir).is_err() {
@@ -101,7 +164,56 @@ pub fn autosave_screenshot(src: &std::path::Path) -> Option<PathBuf> {
     }
     let dst = dir.join(timestamped_png_name());
     std::fs::copy(src, &dst).ok()?;
-    Some(dst)
+    // 复制失败不影响截图：存盘照旧，只在诊断日志里记一行（用户可在设置里关掉自动复制）。
+    let mut copied = false;
+    if load_auto_copy() {
+        match export::copy_saved_png(cx, &dst) {
+            Ok(()) => copied = true,
+            Err(error) => cap_log(&format!("截图自动复制失败：{error}")),
+        }
+    }
+    Some((dst, copied))
+}
+
+/// 截图完成后的统一收尾：自动保存（按设置顺手复制）、再按设置决定弹编辑窗还是闪提示。
+///
+/// 区域框选（`overlay`）与全屏（`capture`）两条路径都走这里：截图后做什么只该有
+/// 一处判断，否则迟早出现「区域弹窗、全屏不弹」这种分叉。
+///
+/// # 参数
+/// - `cx`: 主视图上下文（写剪贴板、开窗口都要）。
+/// - `preview`: 刚截到 / 裁好的原图（临时文件路径 + 尺寸）。
+///
+/// # 返回
+/// 自动保存后的预览（保存失败时仍是临时文件）与状态行提示语。
+pub fn finish_capture(
+    cx: &mut Context<RupixApp>,
+    preview: &PreviewImage,
+) -> (PreviewImage, String) {
+    // 自动保存内部会按设置顺手写一次剪贴板（不需要编辑可直接粘贴）。
+    let saved = autosave_screenshot(&preview.path, cx);
+    let saved_ok = saved.is_some();
+    let (preview, copied, note) = match saved {
+        Some((path, copied)) => (
+            PreviewImage {
+                path,
+                w: preview.w,
+                h: preview.h,
+            },
+            copied,
+            tr("cap.auto_saved"),
+        ),
+        None => (preview.clone(), false, tr("cap.auto_fail")),
+    };
+    // 自动保存失败时仍然打开编辑窗：此时只有临时文件，让用户自己另存一份才安全。
+    if load_open_editor() || !saved_ok {
+        open_viewer(cx.entity(), cx, preview.clone());
+    } else {
+        // 不弹窗时用右下角的胶囊交代结果，否则用户不知道到底截到没有。
+        // 文案按「这次到底复制成功没有」来写，配置开着但剪贴板被占用时不会谎报。
+        toast::show_saved(cx, &preview.path, copied);
+    }
+    (preview, note)
 }
 
 /// 带毫秒时间戳的截图文件名（自动保存、手动保存与 CLI 默认输出共用）。
@@ -243,6 +355,15 @@ enum EntryAction {
     OpenImage,
 }
 
+/// 截图行为开关动作（截图 Tab 的两行开关共用分发）。
+#[derive(Clone, Copy)]
+enum BehaviorAction {
+    /// 截图后自动复制到剪贴板。
+    AutoCopy,
+    /// 截图后打开编辑窗。
+    OpenEditor,
+}
+
 /// 关于页的信息行：左侧固定宽灰标签，右侧值（长文本换行不把卡片撑宽）。
 ///
 /// # 参数
@@ -293,6 +414,10 @@ pub struct RupixApp {
     settings_tab: SettingsTab,
     /// 截图默认保存目录（截图后自动存原图到此，设置页可改）。
     save_dir: PathBuf,
+    /// 截图后是否自动复制到剪贴板（截图 Tab 开关，持久化在程序目录）。
+    auto_copy: bool,
+    /// 截图后是否打开编辑窗（截图 Tab 开关；关闭时只闪保存提示）。
+    open_editor: bool,
     /// 最近保存的文件（路径 + 提示语，最多保留 10 条）。
     recents: Vec<(PathBuf, String)>,
     /// 开机启动当前状态（通用 Tab 开关的显示与切换依据，启动时读真实状态）。
@@ -326,6 +451,9 @@ impl RupixApp {
             status: SharedString::from("就绪"),
             settings_tab: SettingsTab::default(),
             save_dir: load_save_dir(),
+            // 两个截图行为开关直接取持久化值：默认「自动复制开、打开编辑窗关」。
+            auto_copy: load_auto_copy(),
+            open_editor: load_open_editor(),
             recents: Vec::new(),
             // 开机启动状态实时取自注册表 / 自启动文件，避免与系统实际状态脱节。
             autostart: autostart::is_enabled(),
@@ -527,6 +655,30 @@ impl RupixApp {
         }
     }
 
+    /// 切换「截图后自动复制到剪贴板」：先持久化再回执，下次启动保持一致。
+    fn toggle_auto_copy(&mut self, cx: &mut Context<Self>) {
+        self.auto_copy = !self.auto_copy;
+        store_auto_copy(self.auto_copy);
+        self.report_behavior("behavior.auto_copy.title", self.auto_copy, cx);
+    }
+
+    /// 切换「截图后打开编辑窗」：关闭后截完只在右下角闪一下保存提示。
+    fn toggle_open_editor(&mut self, cx: &mut Context<Self>) {
+        self.open_editor = !self.open_editor;
+        store_open_editor(self.open_editor);
+        self.report_behavior("behavior.open_editor.title", self.open_editor, cx);
+    }
+
+    /// 开关切换后的状态栏回执（「标题：已开启 / 已关闭」）。
+    fn report_behavior(&mut self, title_key: &str, on: bool, cx: &mut Context<Self>) {
+        let state = tr(if on { "behavior.on" } else { "behavior.off" });
+        let msg = tr_fmt(
+            "behavior.changed",
+            &[("title", &tr(title_key)), ("state", &state)],
+        );
+        self.set_status(&msg, cx);
+    }
+
     /// 快捷键录制框变化时自动应用新的全局热键（区域 / 全屏各自独立）。
     fn on_hotkey_recorded(
         &mut self,
@@ -629,7 +781,49 @@ impl RupixApp {
             })
     }
 
-    /// 截图 Tab：截图入口按钮（一行一个，固定 200px 宽） + 使用提示。
+    /// 截图行为开关行（标题 + 说明 + 两态胶囊按钮），截图 Tab 两行共用。
+    ///
+    /// 胶囊按钮与「开机启动」同款交互：绿 = 已开启，灰 = 已关闭。
+    fn behavior_row(
+        &self,
+        cx: &mut Context<Self>,
+        id: &'static str,
+        title: String,
+        note: String,
+        on: bool,
+        action: BehaviorAction,
+    ) -> impl IntoElement {
+        // 动作可复制，进闭包后按种类回写对应开关。
+        let view = cx.entity();
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(div().text_sm().child(title))
+            .child(div().text_xs().text_color(rgb(0x555555)).child(note))
+            .child(
+                div()
+                    .id(id)
+                    .w(px(104.))
+                    .px_3()
+                    .py_1()
+                    .rounded_md()
+                    .text_sm()
+                    .text_center()
+                    .cursor_pointer()
+                    .bg(if on { rgb(0x1F9E4B) } else { rgb(0xEEEEEE) })
+                    .text_color(if on { rgb(0xFFFFFF) } else { rgb(0x333333) })
+                    .child(tr(if on { "behavior.on" } else { "behavior.off" }))
+                    .on_click(move |_, _, cx| {
+                        view.update(cx, |this, cx| match action {
+                            BehaviorAction::AutoCopy => this.toggle_auto_copy(cx),
+                            BehaviorAction::OpenEditor => this.toggle_open_editor(cx),
+                        });
+                    }),
+            )
+    }
+
+    /// 截图 Tab：截图入口按钮（一行一个，固定 200px 宽） + 截图行为开关 + 使用提示。
     fn capture_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
@@ -663,6 +857,33 @@ impl RupixApp {
                 0x6A5ACD,
                 EntryAction::OpenImage,
             )))
+            // 截图行为：截完自动复制 / 自动弹编辑窗，两项都即时持久化。
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .p_3()
+                    .rounded_md()
+                    .bg(rgb(0xFFFFFF))
+                    .child(div().text_sm().child(tr("behavior.title")))
+                    .child(self.behavior_row(
+                        cx,
+                        "rupix-btn-autocopy",
+                        tr("behavior.auto_copy.title"),
+                        tr("behavior.auto_copy.note"),
+                        self.auto_copy,
+                        BehaviorAction::AutoCopy,
+                    ))
+                    .child(self.behavior_row(
+                        cx,
+                        "rupix-btn-openeditor",
+                        tr("behavior.open_editor.title"),
+                        tr("behavior.open_editor.note"),
+                        self.open_editor,
+                        BehaviorAction::OpenEditor,
+                    )),
+            )
             .child(
                 div()
                     .text_xs()
@@ -1345,5 +1566,28 @@ impl Render for RupixApp {
                             .child(tr_fmt("app.status", &[("status", &status)])),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! 设置窗口模块单测：只测纯逻辑（配置文件解析），不碰窗口与剪贴板。
+
+    use super::*;
+
+    /// 开关文件内容解析：常见写法都认，无法识别的取默认值。
+    #[test]
+    fn parse_flag_cases() {
+        for text in ["1", "1\n", " true ", "ON", "On"] {
+            assert!(parse_flag(text, false), "{text:?} 应解析为开");
+        }
+        for text in ["0", "0\r\n", "false", " OFF "] {
+            assert!(!parse_flag(text, true), "{text:?} 应解析为关");
+        }
+        // 空文件、手改出错时保持调用方给的默认值（自动复制默认开、编辑窗默认关）。
+        assert!(parse_flag("", true));
+        assert!(!parse_flag("", false));
+        assert!(!parse_flag("yes please", false));
+        assert!(parse_flag("?", true));
     }
 }

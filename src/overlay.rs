@@ -15,10 +15,9 @@ use rgpui::{
 };
 
 use crate::{
-    app::{PreviewImage, RupixApp, autosave_screenshot},
+    app::{PreviewImage, RupixApp, finish_capture},
     capture::cap_log,
     i18n::{tr, tr_fmt},
-    viewer::open_viewer,
 };
 
 /// 首帧捕获完成后传给浮层的数据。
@@ -244,7 +243,7 @@ impl SelectView {
         self.finish(window, cx, (x, y, w, h));
     }
 
-    /// 完成选择：裁剪首帧选区，回写主窗口预览后关闭浮层。
+    /// 完成选择：裁剪首帧选区，交统一收尾（保存 / 复制 / 编辑窗 / 提示）后关闭浮层。
     fn finish(&mut self, window: &mut Window, cx: &mut Context<Self>, rect: (f32, f32, f32, f32)) {
         let (x, y, w, h) = rect;
         // 换算到图片物理像素并钳制在图内。
@@ -257,32 +256,21 @@ impl SelectView {
         let main = self.main.clone();
         match crop_frame(&frame_path, cx0, cy0, cw, ch) {
             Ok(preview) => {
-                // 截图先自动存一份原图到默认保存目录，viewer 里的保存会另存新文件。
-                let (preview, auto_note) = match autosave_screenshot(&preview.path) {
-                    Some(saved) => (
-                        PreviewImage {
-                            path: saved,
-                            w: preview.w,
-                            h: preview.h,
-                        },
-                        tr("cap.auto_saved"),
-                    ),
-                    None => (preview, tr("cap.auto_fail")),
-                };
-                let msg = tr_fmt(
-                    "cap.cropped",
-                    &[
-                        ("w", &cw.to_string()),
-                        ("h", &ch.to_string()),
-                        ("note", &auto_note),
-                    ],
-                );
+                // 统一收尾：自动保存 + 按设置复制 / 弹编辑窗 / 闪提示。
+                // 收尾里会按设置开新窗口，放到主实体更新内做，`cx` 才是主视图上下文。
                 main.update(cx, |state, cx| {
                     state.capturing = false;
+                    let (_, auto_note) = finish_capture(cx, &preview);
+                    let msg = tr_fmt(
+                        "cap.cropped",
+                        &[
+                            ("w", &cw.to_string()),
+                            ("h", &ch.to_string()),
+                            ("note", &auto_note),
+                        ],
+                    );
                     state.set_status(&msg, cx);
                 });
-                // 预览窗口独立展示，支持缩放（后续标注也加在这里）。
-                open_viewer(main, cx, preview);
             }
             Err(error) => {
                 let msg = tr_fmt("cap.crop_fail", &[("error", &error)]);

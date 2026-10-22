@@ -5288,6 +5288,7 @@ dependencies = [
  "embed-resource",
  "image",
  "ocr-rs",
+ "raw-window-handle",
  "rgpui",
  "rgpui-platform",
  "windows 0.62.2",

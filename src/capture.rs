@@ -18,10 +18,9 @@ use rgpui::{
 };
 
 use crate::{
-    app::{PreviewImage, RupixApp, autosave_screenshot},
+    app::{PreviewImage, RupixApp, finish_capture},
     i18n::{tr, tr_fmt},
     overlay::{PendingCapture, open_overlay},
-    viewer::open_viewer,
 };
 
 /// 首帧捕获结果：全屏推流取第一帧落盘，供浮层 / 预览 / 取色器共享。
@@ -86,25 +85,13 @@ pub fn begin_capture(
             .update(cx, |state, cx| {
                 state.capturing = false;
                 if fullscreen {
-                    // 全屏截图：原图先自动存一份到默认保存目录，再进独立预览窗口。
-                    let (preview, auto_note) = match autosave_screenshot(&frame_path) {
-                        Some(saved) => (
-                            PreviewImage {
-                                path: saved,
-                                w: img_w,
-                                h: img_h,
-                            },
-                            tr("cap.auto_saved"),
-                        ),
-                        None => (
-                            PreviewImage {
-                                path: frame_path,
-                                w: img_w,
-                                h: img_h,
-                            },
-                            tr("cap.auto_fail"),
-                        ),
+                    // 全屏截图：统一收尾（自动保存 + 按设置复制 / 弹编辑窗 / 闪提示）。
+                    let preview = PreviewImage {
+                        path: frame_path,
+                        w: img_w,
+                        h: img_h,
                     };
+                    let (_, auto_note) = finish_capture(cx, &preview);
                     let msg = tr_fmt(
                         "cap.full_done",
                         &[
@@ -114,7 +101,6 @@ pub fn begin_capture(
                         ],
                     );
                     state.set_status(&msg, cx);
-                    open_viewer(cx.entity(), cx, preview);
                 } else {
                     // 区域截图：首帧只做裁剪来源，打开薄遮罩浮层框选。
                     state.set_status(&tr("cap.region_hint"), cx);

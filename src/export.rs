@@ -73,6 +73,27 @@ pub fn copy_png_to_clipboard(cx: &mut rgpui::App, png: &[u8]) -> Result<(), Stri
     Ok(())
 }
 
+/// 把已保存的 PNG 文件写进剪贴板，优先「图片 + 文件」双格式。
+///
+/// 与预览窗的「复制」同款：聊天 / 文档里粘成图片，资源管理器里粘成图片文件。
+/// 双格式不可用（非 Windows）或写入失败时退化为只写图片，保证至少能粘图。
+///
+/// # 参数
+/// - `cx`: 应用上下文（退化路径写图片剪贴板用）。
+/// - `path`: 已保存的 PNG 文件路径。
+///
+/// # 返回
+/// 写入成功返回 `Ok(())`；两种方式都失败时返回合并后的错误说明（调用方只记日志）。
+pub fn copy_saved_png(cx: &mut rgpui::App, path: &Path) -> Result<(), String> {
+    let png = std::fs::read(path).map_err(|error| format!("读取 PNG 失败：{error}"))?;
+    match copy_image_and_file_to_clipboard(&png, path) {
+        Ok(()) => Ok(()),
+        Err(dual_error) => copy_png_to_clipboard(cx, &png).map_err(|image_error| {
+            format!("双格式失败（{dual_error}）；仅图片也失败（{image_error}）")
+        }),
+    }
+}
+
 /// 把 PNG 图片字节转换为 Windows DIB 字节（BITMAPINFOHEADER + 自下而上 BGRA）。
 ///
 /// Word / 画图等优先认 CF_DIB，直接给 PNG（`PNG` 注册格式）部分旧程序认不出，

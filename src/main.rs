@@ -17,6 +17,7 @@ mod window;
 // 标注阶段暂未接入，先保留模块，恢复使用时去掉 allow。
 #[allow(dead_code)]
 mod shapes;
+mod toast;
 mod tray;
 mod viewer;
 

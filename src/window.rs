@@ -2,6 +2,8 @@
 //!
 //! 坐标系为物理像素，与屏幕捕获首帧一致，可直接换算到浮层视图坐标。
 //! 非 Windows 平台返回空列表，调用方降级提示“暂不支持”。
+//! 另外提供 [`exclude_from_capture`]：把自己的提示窗口排除出系统抓屏，
+//! 免得连按两次快捷键时把上一次的保存提示也截进图里。
 
 /// 可截图的顶层窗口。
 #[derive(Clone, Debug)]
@@ -38,6 +40,38 @@ pub fn list_windows() -> Vec<CaptureWindow> {
 pub fn hit_test(x: i32, y: i32) -> Option<CaptureWindow> {
     list_windows().into_iter().find(|w| w.contains(x, y))
 }
+
+/// 把自身窗口排除出系统抓屏（提示胶囊用，避免出现在下一张截图里）。
+///
+/// 失败只影响「提示会不会被截进去」，不影响截图本身，因此静默忽略。
+/// Windows 10 2004 之前没有 `WDA_EXCLUDEFROMCAPTURE`，系统会直接拒绝，效果等同未设置。
+///
+/// # 参数
+/// - `window`: 要排除的顶层窗口（rgpui 的 `Window`）。
+#[cfg(target_os = "windows")]
+pub fn exclude_from_capture(window: &rgpui::Window) {
+    use raw_window_handle::RawWindowHandle;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+    };
+    // rgpui 的 `Window` 自带的方法是取 `AnyWindowHandle`（类型擦除句柄），
+    // 拿原生 HWND 只能走 raw-window-handle 的 `HasWindowHandle` trait。
+    let Ok(handle) = raw_window_handle::HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    if let RawWindowHandle::Win32(win32) = handle.as_raw() {
+        // raw-window-handle 的 hwnd 是 NonZeroIsize，直接按指针重建 HWND。
+        let hwnd = HWND(win32.hwnd.get() as *mut core::ffi::c_void);
+        unsafe {
+            let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+        }
+    }
+}
+
+/// 非 Windows 平台暂无对应能力，留空实现（提示照常显示，只是可能被截进去）。
+#[cfg(not(target_os = "windows"))]
+pub fn exclude_from_capture(_window: &rgpui::Window) {}
 
 /// Windows 实现：EnumWindows 按 Z 序枚举，过滤不可见 / 最小化 / 幽灵窗口与自身进程。
 #[cfg(target_os = "windows")]

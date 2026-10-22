@@ -824,6 +824,77 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "Quit"
             }
         }
+        // —— 截图行为（截图 Tab 的两个开关 + 角落保存提示） ——
+        "behavior.title" => {
+            if zh {
+                "截图行为"
+            } else {
+                "After capture"
+            }
+        }
+        "behavior.auto_copy.title" => {
+            if zh {
+                "截图后自动复制到剪贴板"
+            } else {
+                "Copy to clipboard after capture"
+            }
+        }
+        "behavior.auto_copy.note" => {
+            if zh {
+                "截完直接 Ctrl+V 就能粘进聊天 / 文档；在资源管理器里粘贴则得到图片文件"
+            } else {
+                "Press Ctrl+V to paste into any chat or document; paste in Explorer to get the image file"
+            }
+        }
+        "behavior.open_editor.title" => {
+            if zh {
+                "截图后打开编辑窗"
+            } else {
+                "Open editor after capture"
+            }
+        }
+        "behavior.open_editor.note" => {
+            if zh {
+                "关闭时截完只在屏幕右下角闪一下提示；要标注再从托盘「打开图片编辑」进来"
+            } else {
+                "When off, a short toast reports the result; annotate later via the tray menu"
+            }
+        }
+        "behavior.on" => {
+            if zh {
+                "已开启"
+            } else {
+                "Enabled"
+            }
+        }
+        "behavior.off" => {
+            if zh {
+                "已关闭"
+            } else {
+                "Disabled"
+            }
+        }
+        "behavior.changed" => {
+            if zh {
+                "{title}：{state}"
+            } else {
+                "{title}: {state}"
+            }
+        }
+        "toast.saved_copied" => {
+            if zh {
+                "截图已保存并复制"
+            } else {
+                "Screenshot saved and copied"
+            }
+        }
+        "toast.saved" => {
+            if zh {
+                "截图已保存"
+            } else {
+                "Screenshot saved"
+            }
+        }
         // —— 截图流程状态 ——
         "cap.capturing" => {
             if zh {
@@ -834,9 +905,9 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
         }
         "cap.full_done" => {
             if zh {
-                "已截取全屏 {w} × {h}（{note}），见预览窗口"
+                "已截取全屏 {w} × {h}（{note}）"
             } else {
-                "Fullscreen captured {w} × {h} ({note}), see preview window"
+                "Fullscreen captured {w} × {h} ({note})"
             }
         }
         "cap.region_hint" => {
@@ -897,9 +968,9 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
         }
         "cap.cropped" => {
             if zh {
-                "已截取 {w} × {h}（{note}），见预览窗口"
+                "已截取 {w} × {h}（{note}）"
             } else {
-                "Captured {w} × {h} ({note}), see preview window"
+                "Captured {w} × {h} ({note})"
             }
         }
         "cap.crop_fail" => {

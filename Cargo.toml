@@ -86,6 +86,10 @@ windows = { version = "0.62", features = [
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
 ] }
+# 取原生窗口句柄（HWND）：rgpui 的 `Window` 只通过 raw-window-handle 标准 trait
+# 暴露原生句柄，保存提示胶囊要用它把自己排除出抓屏（SetWindowDisplayAffinity）。
+# rgpui 本身已经依赖同一版本（0.6.x），不新增任何下载体积。
+raw-window-handle = "0.6"
 
 
 
