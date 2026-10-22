@@ -125,35 +125,6 @@ mod platform {
         String::from_utf16_lossy(&units[..end])
     }
 
-    #[cfg(test)]
-    mod tests {
-        //! Windows 自启动单测：只测纯字符串解码逻辑（注册表读写不进单测）。
-
-        use super::decode_reg_sz;
-
-        /// 模拟 RegGetValueW 读回的数据（带引号 + 结尾 NUL），
-        /// 解码后应能与裸路径正常比对。
-        #[test]
-        fn decode_reg_sz_strips_quotes_and_trailing_nul() {
-            let raw: Vec<u16> = "\"C:\\Program Files\\rupix.exe\"\0"
-                .encode_utf16()
-                .collect();
-            // 结尾 NUL 先被剥掉，trim_matches('"') 才能把两侧引号都去掉。
-            assert!(
-                decode_reg_sz(&raw)
-                    .trim_matches('"')
-                    .eq_ignore_ascii_case("c:\\program files\\rupix.exe")
-            );
-        }
-
-        /// 无引号登记 + 连续多个 NUL 的数据也应被正确剥离。
-        #[test]
-        fn decode_reg_sz_handles_unquoted_and_multi_nul() {
-            let raw: Vec<u16> = "C:\\a\\rupix.exe\0\0".encode_utf16().collect();
-            assert_eq!(decode_reg_sz(&raw), "C:\\a\\rupix.exe");
-        }
-    }
-
     /// 写入或删除 Run 键中的自启动值。
     pub(super) fn set(on: bool) -> Result<()> {
         // 先算好要写的内容：拿到 exe 路径再开句柄，避免出错时句柄泄漏。
@@ -200,6 +171,35 @@ mod platform {
                 if value.is_some() { "写入" } else { "删除" },
                 code.0
             ),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        //! Windows 自启动单测：只测纯字符串解码逻辑（注册表读写不进单测）。
+
+        use super::decode_reg_sz;
+
+        /// 模拟 RegGetValueW 读回的数据（带引号 + 结尾 NUL），
+        /// 解码后应能与裸路径正常比对。
+        #[test]
+        fn decode_reg_sz_strips_quotes_and_trailing_nul() {
+            let raw: Vec<u16> = "\"C:\\Program Files\\rupix.exe\"\0"
+                .encode_utf16()
+                .collect();
+            // 结尾 NUL 先被剥掉，trim_matches('"') 才能把两侧引号都去掉。
+            assert!(
+                decode_reg_sz(&raw)
+                    .trim_matches('"')
+                    .eq_ignore_ascii_case("c:\\program files\\rupix.exe")
+            );
+        }
+
+        /// 无引号登记 + 连续多个 NUL 的数据也应被正确剥离。
+        #[test]
+        fn decode_reg_sz_handles_unquoted_and_multi_nul() {
+            let raw: Vec<u16> = "C:\\a\\rupix.exe\0\0".encode_utf16().collect();
+            assert_eq!(decode_reg_sz(&raw), "C:\\a\\rupix.exe");
         }
     }
 }
