@@ -762,9 +762,9 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
         }
         "app.boot_ready" => {
             if zh {
-                "就绪：区域 {region}，全屏 {full}，取色 {picker}（窗口已隐藏到托盘）"
+                "就绪：区域 {region} ｜ 全屏 {full} ｜ 取色 {picker}"
             } else {
-                "Ready: region {region}, fullscreen {full}, picker {picker} (window hidden to tray)"
+                "Ready: region {region} | fullscreen {full} | picker {picker}"
             }
         }
         "app.window_title" => {
@@ -841,7 +841,7 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
         }
         "behavior.auto_copy.note" => {
             if zh {
-                "截完直接 Ctrl+V 就能粘进聊天 / 文档；在资源管理器里粘贴则得到图片文件"
+                "截完直接 Ctrl+V 粘贴；在资源管理器粘贴则得到图片文件"
             } else {
                 "Press Ctrl+V to paste into any chat or document; paste in Explorer to get the image file"
             }
@@ -855,7 +855,7 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
         }
         "behavior.open_editor.note" => {
             if zh {
-                "关闭时截完只在屏幕右下角闪一下提示；要标注再从托盘「打开图片编辑」进来"
+                "关闭后截完只在右下角闪一下保存提示，不弹预览窗"
             } else {
                 "When off, a short toast reports the result; annotate later via the tray menu"
             }

@@ -74,8 +74,8 @@ fn main() {
         let region_for_build = region_hotkey.clone();
         let full_for_build = full_hotkey.clone();
         let picker_for_build = picker_hotkey.clone();
-        // 三张热键卡片，默认窗口加高。
-        let bounds = Bounds::centered(None, size(px(560.), px(400.)), cx);
+        // 三张热键卡片 + 截图行为两项，默认窗口加高到 480，保证截图 Tab 不用滚动。
+        let bounds = Bounds::centered(None, size(px(560.), px(480.)), cx);
         let main_win: WindowHandle<RupixApp> = cx
             .open_window(
                 rgpui::WindowOptions {

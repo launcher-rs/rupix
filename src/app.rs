@@ -15,8 +15,11 @@ use crate::{
     viewer::{open_viewer, preview_from_path},
 };
 use rgpui::{
-    Context, Entity, PathPromptOptions, Render, SharedString, Window,
-    components::{HotkeyInput, HotkeyInputState, HotkeyValue},
+    Context, Entity, PathPromptOptions, Render, SharedString, Switch, Window,
+    components::{
+        HotkeyInput, HotkeyInputState, HotkeyValue,
+        status_bar::{StatusBar, StatusBarItem},
+    },
     div,
     prelude::*,
     px, rgb,
@@ -655,18 +658,25 @@ impl RupixApp {
         }
     }
 
-    /// 切换「截图后自动复制到剪贴板」：先持久化再回执，下次启动保持一致。
-    fn toggle_auto_copy(&mut self, cx: &mut Context<Self>) {
-        self.auto_copy = !self.auto_copy;
-        store_auto_copy(self.auto_copy);
-        self.report_behavior("behavior.auto_copy.title", self.auto_copy, cx);
+    /// 设置「截图后自动复制到剪贴板」：先持久化再回执，下次启动保持一致。
+    fn set_auto_copy(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        // 点当前已选中的那一侧不重复写盘、也不刷状态。
+        if self.auto_copy == enabled {
+            return;
+        }
+        self.auto_copy = enabled;
+        store_auto_copy(enabled);
+        self.report_behavior("behavior.auto_copy.title", enabled, cx);
     }
 
-    /// 切换「截图后打开编辑窗」：关闭后截完只在右下角闪一下保存提示。
-    fn toggle_open_editor(&mut self, cx: &mut Context<Self>) {
-        self.open_editor = !self.open_editor;
-        store_open_editor(self.open_editor);
-        self.report_behavior("behavior.open_editor.title", self.open_editor, cx);
+    /// 设置「截图后打开编辑窗」：关闭后截完只在右下角闪一下保存提示。
+    fn set_open_editor(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.open_editor == enabled {
+            return;
+        }
+        self.open_editor = enabled;
+        store_open_editor(enabled);
+        self.report_behavior("behavior.open_editor.title", enabled, cx);
     }
 
     /// 开关切换后的状态栏回执（「标题：已开启 / 已关闭」）。
@@ -781,9 +791,9 @@ impl RupixApp {
             })
     }
 
-    /// 截图行为开关行（标题 + 说明 + 两态胶囊按钮），截图 Tab 两行共用。
+    /// 截图行为选项行（标题 + 开关 + 说明），截图 Tab 两行共用。
     ///
-    /// 胶囊按钮与「开机启动」同款交互：绿 = 已开启，灰 = 已关闭。
+    /// 用 rgpui 的 `Switch`：标题在左、开关在右，说明文字压在下面。
     fn behavior_row(
         &self,
         cx: &mut Context<Self>,
@@ -793,70 +803,83 @@ impl RupixApp {
         on: bool,
         action: BehaviorAction,
     ) -> impl IntoElement {
-        // 动作可复制，进闭包后按种类回写对应开关。
+        // 动作可复制，进开关回调后按种类回写对应设置。
         let view = cx.entity();
         div()
             .flex()
             .flex_col()
             .gap_1()
-            .child(div().text_sm().child(title))
-            .child(div().text_xs().text_color(rgb(0x555555)).child(note))
             .child(
                 div()
-                    .id(id)
-                    .w(px(104.))
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .text_sm()
-                    .text_center()
-                    .cursor_pointer()
-                    .bg(if on { rgb(0x1F9E4B) } else { rgb(0xEEEEEE) })
-                    .text_color(if on { rgb(0xFFFFFF) } else { rgb(0x333333) })
-                    .child(tr(if on { "behavior.on" } else { "behavior.off" }))
-                    .on_click(move |_, _, cx| {
-                        view.update(cx, |this, cx| match action {
-                            BehaviorAction::AutoCopy => this.toggle_auto_copy(cx),
-                            BehaviorAction::OpenEditor => this.toggle_open_editor(cx),
-                        });
-                    }),
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(div().text_sm().child(title))
+                    .child(
+                        Switch::new(id)
+                            .checked(on)
+                            // 与其他入口按钮同色，避免用主题默认的深色。
+                            .color(rgb(0x1E90FF))
+                            .on_change(move |checked, _, cx| {
+                                view.update(cx, |this, cx| match action {
+                                    BehaviorAction::AutoCopy => this.set_auto_copy(checked, cx),
+                                    BehaviorAction::OpenEditor => {
+                                        this.set_open_editor(checked, cx);
+                                    }
+                                });
+                            }),
+                    ),
             )
+            .child(div().text_xs().text_color(rgb(0x555555)).child(note))
     }
 
-    /// 截图 Tab：截图入口按钮（一行一个，固定 200px 宽） + 截图行为开关 + 使用提示。
+    /// 截图 Tab：截图入口按钮（两列两行，各 200px 宽） + 截图行为选项 + 使用提示。
+    ///
+    /// 入口按钮排成 2×2 而不是竖着一行一个：右侧内容区只有约 410px 宽，
+    /// 竖排四个按钮会把下面的「截图行为」挤出可视区，需要滚动才能看到。
     fn capture_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().w(px(200.)).child(self.entry_button(
-                cx,
-                "rupix-btn-region",
-                tr("btn.region"),
-                0x1E90FF,
-                EntryAction::Region,
-            )))
-            .child(div().w(px(200.)).child(self.entry_button(
-                cx,
-                "rupix-btn-full",
-                tr("btn.full"),
-                0x107C10,
-                EntryAction::Full,
-            )))
-            .child(div().w(px(200.)).child(self.entry_button(
-                cx,
-                "rupix-btn-picker",
-                tr("btn.picker"),
-                0xFF8C00,
-                EntryAction::Picker,
-            )))
-            .child(div().w(px(200.)).child(self.entry_button(
-                cx,
-                "rupix-btn-open-image",
-                tr("btn.open_image"),
-                0x6A5ACD,
-                EntryAction::OpenImage,
-            )))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(div().w(px(200.)).child(self.entry_button(
+                        cx,
+                        "rupix-btn-region",
+                        tr("btn.region"),
+                        0x1E90FF,
+                        EntryAction::Region,
+                    )))
+                    .child(div().w(px(200.)).child(self.entry_button(
+                        cx,
+                        "rupix-btn-full",
+                        tr("btn.full"),
+                        0x107C10,
+                        EntryAction::Full,
+                    ))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(div().w(px(200.)).child(self.entry_button(
+                        cx,
+                        "rupix-btn-picker",
+                        tr("btn.picker"),
+                        0xFF8C00,
+                        EntryAction::Picker,
+                    )))
+                    .child(div().w(px(200.)).child(self.entry_button(
+                        cx,
+                        "rupix-btn-open-image",
+                        tr("btn.open_image"),
+                        0x6A5ACD,
+                        EntryAction::OpenImage,
+                    ))),
+            )
             // 截图行为：截完自动复制 / 自动弹编辑窗，两项都即时持久化。
             .child(
                 div()
@@ -1463,109 +1486,125 @@ impl Render for RupixApp {
         div()
             .size_full()
             .flex()
+            .flex_col()
             .bg(rgb(0xF7F7F7))
             .text_color(rgb(0x333333))
-            // 左侧竖排 Tab 栏（固定宽不收缩；窗口压矮时内部滚动而非裁掉）。
+            // 主体：左侧 Tab 栏 + 右侧内容区（共同撑着状态栏以上的空间）。
             .child(
                 div()
-                    .id("settings-tabs")
                     .flex()
-                    .flex_col()
-                    .gap_1()
-                    .w(px(118.))
-                    .flex_shrink_0()
-                    .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .p_3()
-                    .bg(rgb(0xFFFFFF))
-                    .children(SettingsTab::all().into_iter().map(|item| {
-                        let v = view.clone();
-                        let selected = item == tab;
-                        div()
-                            .id(format!("rupix-tab-{}", item.id()))
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .bg(if selected {
-                                rgb(0x1E90FF)
-                            } else {
-                                rgb(0xFFFFFF)
-                            })
-                            .text_color(if selected {
-                                rgb(0xFFFFFF)
-                            } else {
-                                rgb(0x333333)
-                            })
-                            .hover(|style| {
-                                style.bg(if selected {
-                                    rgb(0x1E90FF)
-                                } else {
-                                    rgb(0xEEEEEE)
-                                })
-                            })
-                            .child(item.label())
-                            .on_click(move |_, _, cx| {
-                                v.update(cx, |this, cx| {
-                                    this.settings_tab = SettingsTab::from_id(item.id());
-                                    cx.notify();
-                                });
-                            })
-                    })),
-            )
-            // 右侧：标题 + 可滚内容 + 状态栏（min_w(0) 允许收缩，长文本换行不撑宽）。
-            .child(
-                div()
                     .flex_1()
-                    .min_w(px(0.))
                     .min_h(px(0.))
-                    .overflow_hidden()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .p_4()
-                    // 标题（设置窗口：平时隐藏到托盘；固定不滚）。
+                    .w_full()
+                    // 左侧竖排 Tab 栏（固定宽不收缩；窗口压矮时内部滚动而非裁掉）。
                     .child(
                         div()
-                            .flex_shrink_0()
+                            .id("settings-tabs")
                             .flex()
-                            .items_baseline()
-                            .gap_2()
-                            .child(div().text_xl().child(tr("app.title")))
+                            .flex_col()
+                            .gap_1()
+                            .w(px(118.))
+                            .flex_shrink_0()
+                            .min_h(px(0.))
+                            .overflow_y_scroll()
+                            .p_3()
+                            .bg(rgb(0xFFFFFF))
+                            .children(SettingsTab::all().into_iter().map(|item| {
+                                let v = view.clone();
+                                let selected = item == tab;
+                                div()
+                                    .id(format!("rupix-tab-{}", item.id()))
+                                    .px_3()
+                                    .py_2()
+                                    .rounded_md()
+                                    .text_sm()
+                                    .cursor_pointer()
+                                    .bg(if selected {
+                                        rgb(0x1E90FF)
+                                    } else {
+                                        rgb(0xFFFFFF)
+                                    })
+                                    .text_color(if selected {
+                                        rgb(0xFFFFFF)
+                                    } else {
+                                        rgb(0x333333)
+                                    })
+                                    .hover(|style| {
+                                        style.bg(if selected {
+                                            rgb(0x1E90FF)
+                                        } else {
+                                            rgb(0xEEEEEE)
+                                        })
+                                    })
+                                    .child(item.label())
+                                    .on_click(move |_, _, cx| {
+                                        v.update(cx, |this, cx| {
+                                            this.settings_tab = SettingsTab::from_id(item.id());
+                                            cx.notify();
+                                        });
+                                    })
+                            })),
+                    )
+                    // 右侧：标题 + 可滚内容（min_w(0) 允许收缩，长文本换行不撑宽）。
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .min_h(px(0.))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            // 标题（设置窗口：平时隐藏到托盘；固定不滚）。
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(rgb(0x888888))
-                                    .child(tr("app.subtitle")),
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_baseline()
+                                    .gap_2()
+                                    .px_4()
+                                    .pt_4()
+                                    .pb_3()
+                                    .child(div().text_xl().child(tr("app.title")))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(rgb(0x888888))
+                                            .child(tr("app.subtitle")),
+                                    ),
+                            )
+                            // Tab 内容区：窗口压小时内部滚动，标题保持可见。
+                            .child(
+                                div()
+                                    .id("settings-content")
+                                    .flex_1()
+                                    .min_h(px(0.))
+                                    .w_full()
+                                    .overflow_y_scroll()
+                                    .px_4()
+                                    .child(match tab {
+                                        SettingsTab::Capture => {
+                                            self.capture_tab(cx).into_any_element()
+                                        }
+                                        SettingsTab::Hotkey => {
+                                            self.hotkey_tab(cx).into_any_element()
+                                        }
+                                        SettingsTab::Save => self.save_tab(cx).into_any_element(),
+                                        SettingsTab::Ocr => self.ocr_tab(cx).into_any_element(),
+                                        SettingsTab::General => {
+                                            self.general_tab(cx).into_any_element()
+                                        }
+                                        SettingsTab::About => self.about_tab(cx).into_any_element(),
+                                    }),
                             ),
-                    )
-                    // Tab 内容区：窗口压小时内部滚动，标题与状态栏保持可见。
-                    .child(
-                        div()
-                            .id("settings-content")
-                            .flex_1()
-                            .min_h(px(0.))
-                            .w_full()
-                            .overflow_y_scroll()
-                            .child(match tab {
-                                SettingsTab::Capture => self.capture_tab(cx).into_any_element(),
-                                SettingsTab::Hotkey => self.hotkey_tab(cx).into_any_element(),
-                                SettingsTab::Save => self.save_tab(cx).into_any_element(),
-                                SettingsTab::Ocr => self.ocr_tab(cx).into_any_element(),
-                                SettingsTab::General => self.general_tab(cx).into_any_element(),
-                                SettingsTab::About => self.about_tab(cx).into_any_element(),
-                            }),
-                    )
-                    // 状态栏（常驻底部，各 Tab 操作反馈统一落这里；固定不滚）。
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_sm()
-                            .text_color(rgb(0x555555))
-                            .child(tr_fmt("app.status", &[("status", &status)])),
                     ),
             )
+            // 状态栏：rgpui 的 StatusBar 组件，横跨整个窗口贴底，各 Tab 的反馈都落这里。
+            // 单行显示，超长时靠 tooltip 看全文。
+            .child(StatusBar::new().left(vec![
+                StatusBarItem::new(status.clone())
+                    .id("rupix-status")
+                    .tooltip(status),
+            ]))
     }
 }
 
