@@ -1,6 +1,6 @@
 [package]
 name = "rupix"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "Apache-2.0"
 
@@ -8,10 +8,10 @@ license = "Apache-2.0"
 # rgpui 暂用并列目录里的源码（rgpui_workspace/rgpui）：Linux 浮层 visual 选择、
 # show=false 隐藏启动、帧同步握手三处修复目前只在源码中，crates.io 上的 1.4.1 还没有。
 # rgpui 发新版后把下面两行的 path 换回 version = "x.y.z" 即可，特性保持不变。
-rgpui = { version = "1.4", features = ["screen-capture"] }
+rgpui = { version = "1.6", features = ["screen-capture"] }
 # Linux 图形后端二选一（wayland / x11），缺省两个都不开时运行时直接 unreachable 崩溃；
 # 注意 rgpui 自身的同名特性是空壳，真正的后端开关在 rgpui-linux，经 rgpui-platform 透传才生效。
-rgpui-platform = { version = "1.4", features = [
+rgpui-platform = { version = "1.6", features = [
   "screen-capture",
   "wayland",
   "x11",

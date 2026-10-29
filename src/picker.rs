@@ -68,9 +68,10 @@ pub fn open_picker(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, frame: Ca
                     frame_image.clone(),
                 )
             });
-            // 打开即聚焦根视图，使 Esc 立即可用。
+            // 打开即聚焦根视图并激活窗口，使 Esc 立即可用。
             let handle = view.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
+            window.activate_window();
             view
         },
     );

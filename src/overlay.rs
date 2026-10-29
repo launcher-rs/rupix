@@ -86,9 +86,10 @@ pub fn open_overlay(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, pending:
                     frame_image.clone(),
                 )
             });
-            // 浮层打开即聚焦根视图，使 Esc 立即可用。
+            // 浮层打开即聚焦根视图并激活窗口，使 Esc 立即可用。
             let handle = view.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
+            window.activate_window();
             view
         },
     );
