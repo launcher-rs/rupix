@@ -4,7 +4,30 @@
 
 ## [Unreleased]
 
-- 见 `docs/ROADMAP.md` 的 0.2 规划（JSON 配置统一；开机自启已在本版本落地，见下）。
+后续规划见 [docs/ROADMAP.md](docs/ROADMAP.md)（0.3：JSON 配置统一、多显示器区域截图等）。
+
+### Fixed
+
+- 跨平台默认保存目录：非 Windows 平台此前误读 `USERPROFILE` / `OneDrive`（Windows 专有环境变量），
+  现在 macOS / Linux 依次尝试 `XDG_PICTURES_DIR`、`~/Pictures`、`~/Desktop`，都不可用时回退系统临时目录
+- macOS / Linux 标注文字烧录缺失：字体候选此前全是 Windows 字体，现按平台选择
+  （macOS：PingFang / STHeiti / Helvetica；Linux：Noto Sans CJK / 文泉驿 / DejaVu）
+- Windows 剪贴板写入失败时 `HGLOBAL` 未释放：加锁或 `SetClipboardData` 失败路径现在会 `GlobalFree`
+- 截取中重复触发热键会叠加浮层：区域 / 取色浮层打开期间保持 `capturing`，浮层关闭（含 Alt+F4）
+  或打开失败时统一复位，按钮与状态栏不再卡在「截取中」
+- 切换界面语言后托盘菜单仍是旧语言：语言变更时同步刷新托盘提示与菜单
+- OCR 通用模型兜底在模式匹配守卫里被同名绑定遮蔽，导致文件名不在已知家族表里时找不到模型
+  （`find_trio_cases` 覆盖）
+- 去掉库逻辑里的 `unwrap` / `expect`（复制标注图、OCR 模型三件套、主窗口创建），
+  失败改为状态栏提示 / 日志输出
+
+### Changed
+
+- 文档：重写 README（与系统自带截图工具的差异、真实界面截图、下载 / 配置 / FAQ），
+  发版与 CI 说明拆到 [docs/RELEASING.md](docs/RELEASING.md)；同步 ROADMAP、AGENTS 的模块与配置说明
+- 清理未使用的颜色预设与导出常量，`cargo clippy --all-targets -- -D warnings` 全绿
+
+## [0.2.1] - 2026-10-10
 
 ### Added
 
@@ -33,6 +56,8 @@
   需要标注时在设置 → 截图里打开「截图后打开编辑窗」，或从托盘「打开图片编辑」进来
 - 发版工作流加串行并发控制（`concurrency: release`，不取消进行中的发版），
   避免 tag 发版与手动 `latest` 发版同时跑互相覆盖附件；原发版流程里的冒烟步骤整体迁到 `ci`
+- `rgpui` / `rgpui-platform` 升级到 1.6（含 Linux 浮层 visual 选择、`show=false` 隐藏启动、
+  帧同步握手与截图浮层 Esc 无法取消的修复）
 
 ### Fixed
 
@@ -47,11 +72,6 @@
 - Linux：启动后设置窗口直接甩在桌面上（Windows 是隐藏到托盘）、以及设置窗口出现后先黑屏
   一段时间才出内容 —— 两条根因都在 rgpui 的 X11 后端（忽略 `WindowOptions::show == false`、
   建窗未设 `background_pixel`），Rupix 侧无改动，随 rgpui 更新生效
-
-### Changed
-
-- `rgpui` / `rgpui-platform` 依赖临时切到本地源码路径（`../rgpui/crates/*`）以带上上述 Linux
-  修复；rgpui 发版后把 `path` 换回 `version`
 
 ## [0.1.0] - 2026-09-24
 

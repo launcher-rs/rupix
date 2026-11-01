@@ -5,9 +5,8 @@ edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
-# rgpui 暂用并列目录里的源码（rgpui_workspace/rgpui）：Linux 浮层 visual 选择、
-# show=false 隐藏启动、帧同步握手三处修复目前只在源码中，crates.io 上的 1.4.1 还没有。
-# rgpui 发新版后把下面两行的 path 换回 version = "x.y.z" 即可，特性保持不变。
+# UI 框架：截图冻结帧推流（screen-capture 特性）与全部窗口能力。
+# 1.6 已包含 Linux 浮层 visual 选择、show=false 隐藏启动、帧同步握手与浮层 Esc 取消的修复。
 rgpui = { version = "1.6", features = ["screen-capture"] }
 # Linux 图形后端二选一（wayland / x11），缺省两个都不开时运行时直接 unreachable 崩溃；
 # 注意 rgpui 自身的同名特性是空壳，真正的后端开关在 rgpui-linux，经 rgpui-platform 透传才生效。
@@ -32,8 +31,8 @@ image = { version = "0.25", default-features = false, features = [
 ab_glyph = "0.2"
 # 通用错误类型（库逻辑与 example 共用）。
 anyhow = "1"
-# OCR spike：PaddleOCR 系 Rust 实现（MNN 推理），中英文识别。
-# 模型（三件套约 21MB）放 git 忽略的 temp/ocr-models，见 examples/ocr_spike.rs。
+# 离线 OCR：PaddleOCR 系 Rust 实现（MNN 推理），中英文及小语种识别。
+# 默认模型三件套（约 21MB）已进仓库 `assets/ocr-models/`，构建脚本会同步到输出目录旁。
 ocr-rs = "2.4"
 
 [features]
