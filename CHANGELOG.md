@@ -6,28 +6,7 @@
 
 后续规划见 [docs/ROADMAP.md](docs/ROADMAP.md)（0.3：JSON 配置统一、多显示器区域截图等）。
 
-### Fixed
-
-- 跨平台默认保存目录：非 Windows 平台此前误读 `USERPROFILE` / `OneDrive`（Windows 专有环境变量），
-  现在 macOS / Linux 依次尝试 `XDG_PICTURES_DIR`、`~/Pictures`、`~/Desktop`，都不可用时回退系统临时目录
-- macOS / Linux 标注文字烧录缺失：字体候选此前全是 Windows 字体，现按平台选择
-  （macOS：PingFang / STHeiti / Helvetica；Linux：Noto Sans CJK / 文泉驿 / DejaVu）
-- Windows 剪贴板写入失败时 `HGLOBAL` 未释放：加锁或 `SetClipboardData` 失败路径现在会 `GlobalFree`
-- 截取中重复触发热键会叠加浮层：区域 / 取色浮层打开期间保持 `capturing`，浮层关闭（含 Alt+F4）
-  或打开失败时统一复位，按钮与状态栏不再卡在「截取中」
-- 切换界面语言后托盘菜单仍是旧语言：语言变更时同步刷新托盘提示与菜单
-- OCR 通用模型兜底在模式匹配守卫里被同名绑定遮蔽，导致文件名不在已知家族表里时找不到模型
-  （`find_trio_cases` 覆盖）
-- 去掉库逻辑里的 `unwrap` / `expect`（复制标注图、OCR 模型三件套、主窗口创建），
-  失败改为状态栏提示 / 日志输出
-
-### Changed
-
-- 文档：重写 README（与系统自带截图工具的差异、真实界面截图、下载 / 配置 / FAQ），
-  发版与 CI 说明拆到 [docs/RELEASING.md](docs/RELEASING.md)；同步 ROADMAP、AGENTS 的模块与配置说明
-- 清理未使用的颜色预设与导出常量，`cargo clippy --all-targets -- -D warnings` 全绿
-
-## [0.2.1] - 2026-10-10
+## [0.2.1] - 2026-11-01
 
 ### Added
 
@@ -58,6 +37,24 @@
   避免 tag 发版与手动 `latest` 发版同时跑互相覆盖附件；原发版流程里的冒烟步骤整体迁到 `ci`
 - `rgpui` / `rgpui-platform` 升级到 1.6（含 Linux 浮层 visual 选择、`show=false` 隐藏启动、
   帧同步握手与截图浮层 Esc 无法取消的修复）
+- 文档：重写 README（核心特点、四张实机界面截图、下载 / 使用 / FAQ），
+  发版与 CI 说明拆到 [docs/RELEASING.md](docs/RELEASING.md)；同步 ROADMAP、AGENTS 的模块与配置说明
+- 清理未使用的颜色预设与导出常量，`cargo clippy --all-targets -- -D warnings` 全绿
+
+### Fixed
+
+- 跨平台默认保存目录：非 Windows 平台此前误读 `USERPROFILE` / `OneDrive`（Windows 专有环境变量），
+  现在 macOS / Linux 依次尝试 `XDG_PICTURES_DIR`、`~/Pictures`、`~/Desktop`，都不可用时回退系统临时目录
+- macOS / Linux 标注文字烧录缺失：字体候选此前全是 Windows 字体，现按平台选择
+  （macOS：PingFang / STHeiti / Helvetica；Linux：Noto Sans CJK / 文泉驿 / DejaVu）
+- Windows 剪贴板写入失败时 `HGLOBAL` 未释放：加锁或 `SetClipboardData` 失败路径现在会 `GlobalFree`
+- 截取中重复触发热键会叠加浮层：区域 / 取色浮层打开期间保持 `capturing`，浮层关闭（含 Alt+F4）
+  或打开失败时统一复位，按钮与状态栏不再卡在「截取中」
+- 切换界面语言后托盘菜单仍是旧语言：语言变更时同步刷新托盘提示与菜单
+- OCR 通用模型兜底在模式匹配守卫里被同名绑定遮蔽，导致文件名不在已知家族表里时找不到模型
+  （`find_trio_cases` 覆盖）
+- 去掉库逻辑里的 `unwrap` / `expect`（复制标注图、OCR 模型三件套、主窗口创建），
+  失败改为状态栏提示 / 日志输出
 
 ### Fixed
 
