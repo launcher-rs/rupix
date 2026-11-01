@@ -4,12 +4,6 @@
 
 ## [Unreleased]
 
-### Changed
-
-- 配置文件统一为 exe 旁单个 `rupix-config.json`（`src/config.rs`），取代原来的 8 个单值 txt
-  （保存目录 / 三个热键 / 语言 / OCR 三件套 / 两个截图行为开关）；JSON 损坏时备份为
-  `rupix-config.bak.json` 并回默认值。开机启动状态仍实时读系统登记，不写入配置。
-
 后续规划见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ## [0.2.1] - 2026-11-01
@@ -17,8 +11,7 @@
 ### Added
 
 - 设置页「截图」新增两个截图行为开关：「截图后自动复制到剪贴板」（默认开，截完直接 `Ctrl+V` 可用）、
-  「截图后打开编辑窗」（默认关）；开关存程序目录 `rupix-shot-autocopy.txt` / `rupix-shot-openeditor.txt`，
-  与热键、保存目录等配置同一风格
+  「截图后打开编辑窗」（默认关）；开关与热键、保存目录等设置一起存于 `rupix-config.json`
 - 新增 `src/toast.rs` 截图保存提示：不弹编辑窗时在屏幕右下角闪一枚胶囊（1.6 秒自动消失、
   不抢焦点、经 `WDA_EXCLUDEFROMCAPTURE` 排除出抓屏），交代「已保存（并复制）」与文件名
 - 截图收尾统一到 `app::finish_capture`（区域框选与全屏两条路径同一处判断）：
@@ -37,6 +30,9 @@
 
 ### Changed
 
+- 配置文件统一为 exe 旁单个 `rupix-config.json`（`src/config.rs`），取代原来的 8 个单值 txt
+  （保存目录 / 三个热键 / 语言 / OCR 三件套 / 两个截图行为开关）；JSON 损坏时备份为
+  `rupix-config.bak.json` 并回默认值。开机启动状态仍实时读系统登记，不写入配置
 - 截图默认不再自动弹出编辑窗：截完直接保存并（默认）复制，右下角闪一下提示；
   需要标注时在设置 → 截图里打开「截图后打开编辑窗」，或从托盘「打开图片编辑」进来
 - 发版工作流加串行并发控制（`concurrency: release`，不取消进行中的发版），
@@ -61,9 +57,6 @@
   （`find_trio_cases` 覆盖）
 - 去掉库逻辑里的 `unwrap` / `expect`（复制标注图、OCR 模型三件套、主窗口创建），
   失败改为状态栏提示 / 日志输出
-
-### Fixed
-
 - Windows：开机启动开关打开后立刻又显示「已关闭」——`autostart::enabled()` 读回 REG_SZ 时
   数据带结尾 NUL（`RegGetValueW` 对 REG_SZ 连终止符一起返回），`from_utf16_lossy` 把它变成
   `'\0'` 字符后 `trim_matches('"')` 连引号都剥不掉，比对恒不相等。现在解码前先把尾部 NUL
