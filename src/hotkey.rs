@@ -5,11 +5,13 @@
 
 use rgpui::{App, Keystroke, components::HotkeyValue};
 
-use crate::i18n::{tr, tr_fmt};
+use crate::{
+    config,
+    i18n::{tr, tr_fmt},
+};
 
 /// 截图热键种类：区域、全屏、取色各一个系统级全局热键。
-///（窗口吸附已合入区域截图，不再需要独立窗口热键；
-/// 老版本残留的 `rupix-hotkey-window.txt` 会被忽略，不删除用户文件。）
+///（窗口吸附已合入区域截图，不再需要独立窗口热键。）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HotkeyKind {
     /// 区域截图（含窗口吸附）。
@@ -36,15 +38,6 @@ impl HotkeyKind {
             HotkeyKind::Region => "ctrl-shift-a",
             HotkeyKind::Full => "ctrl-shift-f",
             HotkeyKind::Picker => "ctrl-shift-p",
-        }
-    }
-
-    /// 配置文件名（与程序放同一目录；区域沿用旧单热键文件名，老配置直接生效）。
-    pub fn file_name(self) -> &'static str {
-        match self {
-            HotkeyKind::Region => "rupix-hotkey.txt",
-            HotkeyKind::Full => "rupix-hotkey-full.txt",
-            HotkeyKind::Picker => "rupix-hotkey-picker.txt",
         }
     }
 
@@ -84,14 +77,16 @@ pub fn hotkey_value_to_string(value: &HotkeyValue) -> String {
     parts.join("-")
 }
 
-/// 读取用户保存的截图热键，文件不存在或非法时回退到该种类的默认值。
+/// 读取用户保存的截图热键，未设置或非法时回退到该种类的默认值。
 pub fn load_hotkey_string(kind: HotkeyKind) -> String {
-    // 配置与程序放在同一目录，重装也不会丢；取不到路径时直接用默认值。
-    // 顺手校验一次，非法配置不污染本次运行。
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(kind.file_name())))
-        .and_then(|path| std::fs::read_to_string(path).ok())
+    let cfg = config::load();
+    let stored = match kind {
+        HotkeyKind::Region => cfg.hotkeys.region,
+        HotkeyKind::Full => cfg.hotkeys.full,
+        HotkeyKind::Picker => cfg.hotkeys.picker,
+    };
+    // 顺手校验一次，手改坏的配置不污染本次运行。
+    stored
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty() && Keystroke::parse(text).is_ok())
         .unwrap_or_else(|| kind.default_text().to_string())
@@ -100,13 +95,15 @@ pub fn load_hotkey_string(kind: HotkeyKind) -> String {
 /// 保存用户录制的截图热键字符串。
 ///
 /// # 参数
-/// - `kind`: 热键种类（决定写哪个配置文件）。
+/// - `kind`: 热键种类（决定写哪个配置字段）。
 /// - `hotkey`: 如 `ctrl-shift-a` 的按键串。
 pub fn save_hotkey_string(kind: HotkeyKind, hotkey: &str) {
     // 写入失败仅忽略（不阻断改键流程），调用方已通过返回值提示注册结果。
-    if let Some(path) = hotkey_file_path(kind) {
-        let _ = std::fs::write(path, hotkey);
-    }
+    config::update(|cfg| match kind {
+        HotkeyKind::Region => cfg.hotkeys.region = Some(hotkey.to_string()),
+        HotkeyKind::Full => cfg.hotkeys.full = Some(hotkey.to_string()),
+        HotkeyKind::Picker => cfg.hotkeys.picker = Some(hotkey.to_string()),
+    });
 }
 
 /// 应用全局截图热键：先注销旧注册，再注册新按键串。
@@ -140,16 +137,4 @@ pub fn apply_global_hotkey(cx: &mut App, kind: HotkeyKind, hotkey: &str) -> Resu
                 ],
             )
         })
-}
-
-/// 快捷键配置文件的完整路径。
-fn hotkey_file_path(kind: HotkeyKind) -> Option<std::path::PathBuf> {
-    // 优先放在程序所在目录， portable 风格，开箱即用；
-    // 极端情况下（如路径不可取）回退到系统临时目录。
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        return Some(dir.join(kind.file_name()));
-    }
-    Some(std::env::temp_dir().join(kind.file_name()))
 }

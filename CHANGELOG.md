@@ -4,7 +4,13 @@
 
 ## [Unreleased]
 
-后续规划见 [docs/ROADMAP.md](docs/ROADMAP.md)（0.3：JSON 配置统一、多显示器区域截图等）。
+### Changed
+
+- 配置文件统一为 exe 旁单个 `rupix-config.json`（`src/config.rs`），取代原来的 8 个单值 txt
+  （保存目录 / 三个热键 / 语言 / OCR 三件套 / 两个截图行为开关）；JSON 损坏时备份为
+  `rupix-config.bak.json` 并回默认值。开机启动状态仍实时读系统登记，不写入配置。
+
+后续规划见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ## [0.2.1] - 2026-11-01
 

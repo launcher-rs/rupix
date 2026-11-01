@@ -31,6 +31,10 @@ image = { version = "0.25", default-features = false, features = [
 ab_glyph = "0.2"
 # 通用错误类型（库逻辑与 example 共用）。
 anyhow = "1"
+# 统一配置文件的序列化（exe 旁单个 `rupix-config.json`）。
+# 两者早已在 rgpui 的依赖树里，不引入额外下载体积。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # 离线 OCR：PaddleOCR 系 Rust 实现（MNN 推理），中英文及小语种识别。
 # 默认模型三件套（约 21MB）已进仓库 `assets/ocr-models/`，构建脚本会同步到输出目录旁。
 ocr-rs = "2.4"

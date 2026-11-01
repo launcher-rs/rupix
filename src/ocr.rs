@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 
 use image::RgbaImage;
 
-use crate::shapes::PixelRect;
+use crate::{config, shapes::PixelRect};
 
 /// 行保留阈值：spike 中正常行 89%+、误检 50–62%，取 0.65 留余量。
 pub const MIN_LINE_CONFIDENCE: f32 = 0.65;
@@ -46,8 +46,6 @@ pub const HF_MODELS_URL: &str = "https://huggingface.co/launcher-rs/rupix-models
 /// 一键下载命令（仓库根下执行，设置页下载指引展示 / 复制用）。
 pub const DOWNLOAD_CMD: &str =
     "powershell -ExecutionPolicy Bypass -File scripts/download-ocr-models.ps1";
-/// 设置页手动指定的三件套文件名（存程序旁的 `rupix-ocrfiles.txt`，三行各一）。
-const CUSTOM_FILES_FILE: &str = "rupix-ocrfiles.txt";
 
 /// 已知模型三件套（检测 / 识别 / 字典文件名 + 家族标签），按优先级排序。
 ///
@@ -227,52 +225,37 @@ fn candidate_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// 设置页手动指定的三件套文件（检测 / 识别 / 字典各一，存程序旁配置文件）。
+/// 设置页手动指定的三件套文件（检测 / 识别 / 字典各一，存统一配置）。
 ///
-/// 三行分别是检测 / 识别 / 字典的绝对路径；任一行缺失或文件不可用即视为未指定，
-/// 回退自动查找。文件名不做任何匹配，叫什么都能用。
+/// 三项都可用才生效；任一项缺失或文件被删即视为未指定，回退自动查找。
+/// 文件名不做任何匹配，叫什么都能用。
 pub fn custom_model_files() -> Option<(PathBuf, PathBuf, PathBuf)> {
-    // 配置与程序放在同一目录，重装也不会丢；文件被删则回退自动查找。
-    let text = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(CUSTOM_FILES_FILE)))
-        .and_then(|path| std::fs::read_to_string(path).ok())?;
-    let mut lines = text.lines();
-    let file = |line: Option<&str>| {
-        line.map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(PathBuf::from)
-            .filter(|path| path.is_file())
-    };
-    match (file(lines.next()), file(lines.next()), file(lines.next())) {
-        (Some(det), Some(rec), Some(keys)) => Some((det, rec, keys)),
-        _ => None,
-    }
+    let files = config::load().ocr;
+    // 配置路径可能已被用户删除：逐项校验存在性，任一项失效即整体回退。
+    let usable = |path: Option<&PathBuf>| path.filter(|path| path.is_file()).cloned();
+    Some((
+        usable(files.det.as_ref())?,
+        usable(files.rec.as_ref())?,
+        usable(files.keys.as_ref())?,
+    ))
 }
 
 /// 持久化手动指定的三件套文件（None 表示该项未设置，写入失败仅忽略）。
 pub fn store_custom_model_files(det: Option<&Path>, rec: Option<&Path>, keys: Option<&Path>) {
-    // 优先放在程序所在目录，极端情况回退到系统临时目录。
-    let path = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(CUSTOM_FILES_FILE)))
-        .unwrap_or_else(|| std::env::temp_dir().join(CUSTOM_FILES_FILE));
-    let line = |item: Option<&Path>| {
-        item.map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    };
-    let text = format!("{}\n{}\n{}\n", line(det), line(rec), line(keys));
-    let _ = std::fs::write(path, text);
+    config::update(|cfg| {
+        cfg.ocr.det = det.map(Path::to_path_buf);
+        cfg.ocr.rec = rec.map(Path::to_path_buf);
+        cfg.ocr.keys = keys.map(Path::to_path_buf);
+    });
 }
 
-/// 清除手动指定的三件套，恢复自动查找（文件缺失也视为成功）。
+/// 清除手动指定的三件套，恢复自动查找。
 pub fn clear_custom_model_files() {
-    // 按写入时的同优先级定位，删不到就当已清除。
-    let path = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(CUSTOM_FILES_FILE)))
-        .unwrap_or_else(|| std::env::temp_dir().join(CUSTOM_FILES_FILE));
-    let _ = std::fs::remove_file(path);
+    config::update(|cfg| {
+        cfg.ocr.det = None;
+        cfg.ocr.rec = None;
+        cfg.ocr.keys = None;
+    });
 }
 
 /// 文件可用（存在且非空）：设置页选文件时过滤占位空文件用。

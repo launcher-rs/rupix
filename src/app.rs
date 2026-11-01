@@ -8,7 +8,7 @@
 use crate::{
     autostart,
     capture::{begin_capture, begin_picker, cap_log},
-    export,
+    config, export,
     hotkey::{HotkeyKind, apply_global_hotkey, hotkey_value_to_string, save_hotkey_string},
     i18n::{available_langs, lang, set_lang, tr, tr_fmt},
     ocr, toast,
@@ -25,15 +25,6 @@ use rgpui::{
     px, rgb,
 };
 use std::path::PathBuf;
-
-/// 默认保存目录的配置文件名（与程序放同一目录，参考热键配置）。
-const SAVE_DIR_FILE: &str = "rupix-savedir.txt";
-
-/// 「截图后自动复制到剪贴板」开关的配置文件名（同目录，内容为 `1` / `0`）。
-const AUTO_COPY_FILE: &str = "rupix-shot-autocopy.txt";
-
-/// 「截图后打开编辑窗」开关的配置文件名（同目录，内容为 `1` / `0`）。
-const OPEN_EDITOR_FILE: &str = "rupix-shot-openeditor.txt";
 
 /// 项目仓库地址（关于页展示、打开与复制共用）。
 const REPO_URL: &str = "https://github.com/launcher-rs/rupix";
@@ -85,24 +76,13 @@ pub fn default_save_dir() -> PathBuf {
     std::env::temp_dir()
 }
 
-/// 单个配置文件（保存目录 / 截图行为开关）的完整路径。
-///
-/// 优先与程序放在同一目录（重装不丢）；取不到程序路径时回退系统临时目录。
-fn setting_path(file: &str) -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(file)))
-        .unwrap_or_else(|| std::env::temp_dir().join(file))
-}
-
 /// 读取用户配置的截图默认保存目录；未配置或目录已失效时回退到系统默认。
 pub fn load_save_dir() -> PathBuf {
-    // 配置与程序放在同一目录，重装也不会丢；目录被删/不可用则回退默认。
-    let custom = std::fs::read_to_string(setting_path(SAVE_DIR_FILE))
-        .ok()
-        .map(|text| PathBuf::from(text.trim()))
-        .filter(|dir| !dir.as_os_str().is_empty() && dir.is_dir());
-    custom.unwrap_or_else(default_save_dir)
+    // 配置里的目录可能已被用户删除：失效即回退默认。
+    config::load()
+        .save_dir
+        .filter(|dir| !dir.as_os_str().is_empty() && dir.is_dir())
+        .unwrap_or_else(default_save_dir)
 }
 
 /// 持久化用户选择的截图默认保存目录（写入失败仅忽略，不阻断流程）。
@@ -110,35 +90,12 @@ pub fn load_save_dir() -> PathBuf {
 /// # 参数
 /// - `dir`: 用户在目录对话框中选中的真实目录。
 pub fn store_save_dir(dir: &std::path::Path) {
-    let _ = std::fs::write(setting_path(SAVE_DIR_FILE), dir.to_string_lossy().as_ref());
-}
-
-/// 解析布尔开关的文件内容：`1` / `true` / `on` 为开，`0` / `false` / `off` 为关。
-///
-/// 手改出错、空文件等无法识别的内容一律取默认值，不让配置问题影响截图流程。
-fn parse_flag(text: &str, default: bool) -> bool {
-    match text.trim().to_lowercase().as_str() {
-        "1" | "true" | "on" => true,
-        "0" | "false" | "off" => false,
-        _ => default,
-    }
-}
-
-/// 读取布尔开关；文件不存在时用 `default`（首次运行即默认行为）。
-fn load_flag(file: &str, default: bool) -> bool {
-    std::fs::read_to_string(setting_path(file))
-        .map(|text| parse_flag(&text, default))
-        .unwrap_or(default)
-}
-
-/// 持久化布尔开关：写 `1` / `0`（写入失败仅忽略，下次启动回到默认值）。
-fn store_flag(file: &str, value: bool) {
-    let _ = std::fs::write(setting_path(file), if value { "1" } else { "0" });
+    config::update(|cfg| cfg.save_dir = Some(dir.to_path_buf()));
 }
 
 /// 读取「截图后自动复制到剪贴板」设置（默认开：截完直接 `Ctrl+V` 就能用）。
 pub fn load_auto_copy() -> bool {
-    load_flag(AUTO_COPY_FILE, true)
+    config::load().shot.auto_copy
 }
 
 /// 持久化「截图后自动复制到剪贴板」设置（写入失败仅忽略，不阻断截图流程）。
@@ -146,12 +103,12 @@ pub fn load_auto_copy() -> bool {
 /// # 参数
 /// - `enabled`: 是否在截图保存后自动写剪贴板。
 pub fn store_auto_copy(enabled: bool) {
-    store_flag(AUTO_COPY_FILE, enabled);
+    config::update(|cfg| cfg.shot.auto_copy = enabled);
 }
 
 /// 读取「截图后打开编辑窗」设置（默认关：截完只闪一下提示，需要时再手动编辑）。
 pub fn load_open_editor() -> bool {
-    load_flag(OPEN_EDITOR_FILE, false)
+    config::load().shot.open_editor
 }
 
 /// 持久化「截图后打开编辑窗」设置（写入失败仅忽略，不阻断截图流程）。
@@ -159,7 +116,7 @@ pub fn load_open_editor() -> bool {
 /// # 参数
 /// - `enabled`: 是否在截图保存后自动打开编辑窗。
 pub fn store_open_editor(enabled: bool) {
-    store_flag(OPEN_EDITOR_FILE, enabled);
+    config::update(|cfg| cfg.shot.open_editor = enabled);
 }
 
 /// 截图自动保存：刚截到的原图先存一份到默认保存目录（时间戳命名，天然不重名）。
@@ -1685,28 +1642,5 @@ impl Render for RupixApp {
                     .id("rupix-status")
                     .tooltip(status),
             ]))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    //! 设置窗口模块单测：只测纯逻辑（配置文件解析），不碰窗口与剪贴板。
-
-    use super::*;
-
-    /// 开关文件内容解析：常见写法都认，无法识别的取默认值。
-    #[test]
-    fn parse_flag_cases() {
-        for text in ["1", "1\n", " true ", "ON", "On"] {
-            assert!(parse_flag(text, false), "{text:?} 应解析为开");
-        }
-        for text in ["0", "0\r\n", "false", " OFF "] {
-            assert!(!parse_flag(text, true), "{text:?} 应解析为关");
-        }
-        // 空文件、手改出错时保持调用方给的默认值（自动复制默认开、编辑窗默认关）。
-        assert!(parse_flag("", true));
-        assert!(!parse_flag("", false));
-        assert!(!parse_flag("yes please", false));
-        assert!(parse_flag("?", true));
     }
 }

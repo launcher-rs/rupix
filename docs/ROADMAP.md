@@ -2,38 +2,7 @@
 
 ## 下一版本（0.3）
 
-### 1. 配置文件统一为 JSON
-
-现状：exe 旁散落 8 个单值 txt（`rupix-savedir.txt` / `rupix-hotkey.txt` / `rupix-hotkey-full.txt` /
-`rupix-hotkey-picker.txt` / `rupix-lang.txt` / `rupix-ocrfiles.txt` /
-`rupix-shot-autocopy.txt` / `rupix-shot-openeditor.txt`），难维护、难扩展。
-
-目标：单个 `rupix-config.json`（仍放 exe 旁，保持绿色便携、重装不丢）：
-
-```json
-{
-  "version": 1,
-  "save_dir": "C:/Users/xxx/Pictures/rupix",
-  "hotkeys": { "region": "Ctrl+Shift+A", "full": "Ctrl+Shift+F", "picker": "Ctrl+Shift+P" },
-  "lang": "zh",
-  "ocr": { "det": "C:/models/det.mnn", "rec": "C:/models/rec.mnn", "keys": "C:/models/keys.txt" },
-  "shot": { "auto_copy": true, "open_editor": false },
-  "autostart": false
-}
-```
-
-- 新增 `serde` / `serde_json` 依赖（标准做法，体积可忽略）。
-- 新增 `src/config.rs` 模块集中读写，对外 API 草拟：
-  - `config::load() -> AppConfig`（文件缺失/损坏用默认值，不 panic）；
-  - `config::update(f: impl FnOnce(&mut AppConfig))`（读-改-写原子落盘，写临时文件后 rename）；
-  - 各字段 `Option` 化：`None` = 未设置，走现有回退链（系统默认/自动查找）。
-- 首次启动自动迁移：读旧 txt → 合并进 JSON → 校验成功后删除旧 txt
-  （任一步失败保留旧文件，下次启动再试，不丢配置）。
-- 迁移映射：`rupix-savedir.txt`→`save_dir`，三个热键→`hotkeys.*`，
-  `rupix-lang.txt`→`lang`，`rupix-ocrfiles.txt`三行→`ocr.{det,rec,keys}`，
-  两个截图行为开关→`shot.{auto_copy,open_editor}`。
-
-### 2. 候选（待定优先级）
+### 候选（待定优先级）
 
 - 多显示器区域截图：当前冻结帧只取主显示器，需按显示器拼接并处理混 DPI。
 - OCR 小语种标签：家族表已支持 11 个小语种文件名，可继续补。
@@ -41,6 +10,26 @@
 - 标注体验：按反馈继续打磨。
 
 ## 已完成
+
+- **配置文件统一为 JSON**（0.3）：`src/config.rs`，exe 旁单个 `rupix-config.json` 取代原来散落的
+  8 个单值 txt（保存目录 / 三个热键 / 语言 / OCR 三件套 / 两个截图行为开关）。
+
+  ```json
+  {
+    "version": 1,
+    "save_dir": "C:/Users/xxx/Pictures/rupix",
+    "hotkeys": { "region": "ctrl-shift-a", "full": "ctrl-shift-f", "picker": "ctrl-shift-p" },
+    "lang": "zh",
+    "ocr": { "det": "C:/models/det.mnn", "rec": "C:/models/rec.mnn", "keys": "C:/models/keys.txt" },
+    "shot": { "auto_copy": true, "open_editor": false }
+  }
+  ```
+
+  - 对外 API：`load() -> AppConfig` / `update(|cfg| ...)`（读改写后先写临时文件再 rename）；
+    字段 `Option` 化，`null` 表示未设置、走各业务模块原有回退链。
+  - JSON 损坏时备份为 `rupix-config.bak.json` 并回默认值，不 panic。
+  - 开机启动状态仍实时读系统登记（注册表 / LaunchAgents / XDG），**不写入 JSON**，
+    避免与系统真实状态脱节。
 
 - **开机自启开关**（0.2.1）：`src/autostart.rs`，设置 → 通用加"开机启动"开关；
   对外 API：`is_supported()` / `is_enabled()` / `set_enabled(on)`。

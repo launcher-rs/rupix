@@ -5,6 +5,7 @@ mod app;
 mod autostart;
 mod capture;
 mod cli;
+mod config;
 mod export;
 mod hotkey;
 mod i18n;

@@ -98,8 +98,7 @@
 | 通用 | 界面语言、开机启动 |
 | 关于 | 版本、简介、仓库地址 |
 
-配置文件都在 exe 旁边（纯文本，可直接编辑）：`rupix-savedir.txt`、`rupix-hotkey*.txt`、
-`rupix-lang.txt`、`rupix-ocrfiles.txt`、`rupix-shot-autocopy.txt`、`rupix-shot-openeditor.txt`。
+全部设置集中在 exe 旁边的 `rupix-config.json`（纯文本，可直接编辑）。
 
 ## 命令行截图
 

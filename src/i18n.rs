@@ -10,8 +10,8 @@ use std::{
     sync::{OnceLock, RwLock},
 };
 
-/// 语言配置文件名（与程序放同一目录，内容如 `en`，参考热键配置）。
-const LANG_FILE: &str = "rupix-lang.txt";
+use crate::config;
+
 /// 外部语言文件前缀（如 `lang-ja.txt`）。
 const LANG_FILE_PREFIX: &str = "lang-";
 
@@ -163,23 +163,18 @@ pub fn tr_fmt(key: &str, args: &[(&str, &str)]) -> String {
     text
 }
 
-/// 读取语言配置；无配置或非法时默认中文。
+/// 读取语言配置；未设置或无法识别时默认中文。
 fn load_lang() -> Lang {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(LANG_FILE)))
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .map(|text| Lang::from_code(text.trim()))
+    config::load()
+        .lang
+        .map(|code| Lang::from_code(&code))
         .unwrap_or(Lang::Zh)
 }
 
 /// 持久化语言配置（写入失败仅忽略）。
 fn store_lang(lang: &Lang) {
-    let path = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(LANG_FILE)))
-        .unwrap_or_else(|| std::env::temp_dir().join(LANG_FILE));
-    let _ = std::fs::write(path, lang.code());
+    let code = lang.code();
+    config::update(|cfg| cfg.lang = Some(code));
 }
 
 /// 加载外部语言覆盖表（中英内置不需要文件，其他语言缺文件则为空表）。
