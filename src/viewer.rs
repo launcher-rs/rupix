@@ -1483,7 +1483,7 @@ impl ImageViewer {
         // 有标注则烧录后落到剪贴板缓存文件（HDROP 目标必须是一个真实存在的文件）。
         let (png, file_path) = if self.shapes.is_empty() {
             match std::fs::read(&self.preview.path) {
-                Ok(bytes) => (Some(bytes), self.preview.path.clone()),
+                Ok(bytes) => (bytes, self.preview.path.clone()),
                 Err(error) => {
                     let msg = tr_fmt("viewer.copy_read_fail", &[("error", &error.to_string())]);
                     self.set_viewer_status(&msg, cx);
@@ -1512,9 +1512,8 @@ impl ImageViewer {
                 self.set_viewer_status(&msg, cx);
                 return;
             }
-            (Some(bytes), path)
+            (bytes, path)
         };
-        let png = png.expect("PNG 字节应在上一步就绪");
 
         // 双格式写入：一次搞定图片粘贴（Word / 画图）与文件粘贴（资源管理器）。
         match copy_image_and_file_to_clipboard(&png, &file_path) {

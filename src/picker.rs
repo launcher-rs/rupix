@@ -31,7 +31,15 @@ const MAG_W: f32 = MAG_N as f32 * MAG_Z;
 /// - `main`: 设置窗口实体（复制成功后回写状态）。
 /// - `cx`: 调用方上下文。
 /// - `frame`: 首帧图片与窗口尺寸。
-pub fn open_picker(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, frame: CapturedFrame) {
+///
+/// # 返回
+/// 浮层成功打开返回 `true`（之后由取色完成 / 取消复位状态）；
+/// 建窗失败返回 `false`，调用方需自行复位「截取中」状态。
+pub fn open_picker(
+    main: Entity<RupixApp>,
+    cx: &mut Context<RupixApp>,
+    frame: CapturedFrame,
+) -> bool {
     // 图片尺寸兜底：捕获时没读到就现场解码一次。
     let (img_w, img_h) = if frame.img_w > 0 && frame.img_h > 0 {
         (frame.img_w, frame.img_h)
@@ -56,6 +64,15 @@ pub fn open_picker(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, frame: Ca
             ..Default::default()
         },
         move |window, cx| {
+            // 浮层被系统直接关掉（Alt+F4 等）时复位状态机，避免卡在「截取中」。
+            let main_for_close = main.clone();
+            window.on_window_should_close(cx, move |_, cx| {
+                main_for_close.update(cx, |state, cx| {
+                    state.capturing = false;
+                    state.set_status(&tr("cap.cancelled"), cx);
+                });
+                true
+            });
             let view = cx.new(|cx| {
                 PickerView::new(
                     window,
@@ -75,8 +92,12 @@ pub fn open_picker(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, frame: Ca
             view
         },
     );
-    if let Err(error) = opened {
-        cap_log(&format!("取色浮层打开失败：{error:?}"));
+    match opened {
+        Ok(_) => true,
+        Err(error) => {
+            cap_log(&format!("取色浮层打开失败：{error:?}"));
+            false
+        }
     }
 }
 
@@ -168,12 +189,15 @@ impl PickerView {
                 let hex = rgb_to_hex(r, g, b);
                 cx.write_to_clipboard(ClipboardItem::new_string(hex.clone()));
                 main.update(cx, |state, cx| {
+                    // 取色结束，复位状态机（浮层期间一直是截取中）。
+                    state.capturing = false;
                     let msg = tr_fmt("picker.copied", &[("hex", &hex)]);
                     state.set_status(&msg, cx);
                 });
             }
             None => {
                 main.update(cx, |state, cx| {
+                    state.capturing = false;
                     state.set_status(&tr("picker.fail"), cx);
                 });
             }

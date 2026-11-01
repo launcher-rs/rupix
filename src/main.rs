@@ -5,21 +5,17 @@ mod app;
 mod autostart;
 mod capture;
 mod cli;
-// 公开函数均被 viewer 使用，allow 仅为冗余防护。
-#[allow(dead_code)]
 mod export;
 mod hotkey;
 mod i18n;
 mod ocr;
 mod overlay;
 mod picker;
-mod window;
-// 标注阶段暂未接入，先保留模块，恢复使用时去掉 allow。
-#[allow(dead_code)]
 mod shapes;
 mod toast;
 mod tray;
 mod viewer;
+mod window;
 
 use std::{cell::RefCell, rc::Rc};
 
@@ -76,44 +72,52 @@ fn main() {
         let picker_for_build = picker_hotkey.clone();
         // 三张热键卡片 + 截图行为两项，默认窗口加高到 480，保证截图 Tab 不用滚动。
         let bounds = Bounds::centered(None, size(px(560.), px(480.)), cx);
-        let main_win: WindowHandle<RupixApp> = cx
-            .open_window(
-                rgpui::WindowOptions {
-                    window_bounds: Some(rgpui::WindowBounds::Windowed(bounds)),
-                    titlebar: Some(rgpui::TitlebarOptions {
-                        title: Some(i18n::tr("app.window_title").into()),
-                        ..Default::default()
-                    }),
-                    // 设置窗口平时不需要显示：启动即隐藏到托盘，
-                    // 用户经托盘菜单 / 图标点击再打开，快捷键截图不受影响。
-                    show: false,
-                    focus: false,
+        let opened = cx.open_window(
+            rgpui::WindowOptions {
+                window_bounds: Some(rgpui::WindowBounds::Windowed(bounds)),
+                titlebar: Some(rgpui::TitlebarOptions {
+                    title: Some(i18n::tr("app.window_title").into()),
                     ..Default::default()
-                },
-                move |window, cx| {
-                    let view = cx.new(|cx| {
-                        RupixApp::new(
-                            window,
-                            cx,
-                            region_for_build,
-                            full_for_build,
-                            picker_for_build,
-                        )
-                    });
-                    *main_cell_for_build.borrow_mut() = Some(view.clone());
-                    // 关闭按钮只隐藏到托盘，不退出进程（退出走托盘菜单）。
-                    window.on_window_should_close(cx, |window, _| {
-                        window.hide_window();
-                        false
-                    });
-                    view
-                },
-            )
-            .expect("打开 Rupix 主窗口失败");
-        let main = main_cell
-            .borrow()
-            .clone()
-            .expect("主视图实体应在建窗时初始化");
+                }),
+                // 设置窗口平时不需要显示：启动即隐藏到托盘，
+                // 用户经托盘菜单 / 图标点击再打开，快捷键截图不受影响。
+                show: false,
+                focus: false,
+                ..Default::default()
+            },
+            move |window, cx| {
+                let view = cx.new(|cx| {
+                    RupixApp::new(
+                        window,
+                        cx,
+                        region_for_build,
+                        full_for_build,
+                        picker_for_build,
+                    )
+                });
+                *main_cell_for_build.borrow_mut() = Some(view.clone());
+                // 关闭按钮只隐藏到托盘，不退出进程（退出走托盘菜单）。
+                window.on_window_should_close(cx, |window, _| {
+                    window.hide_window();
+                    false
+                });
+                view
+            },
+        );
+        // 建窗失败属于环境级故障（无显示服务 / 资源耗尽）：没有主窗口就挂不了托盘与热键，
+        // 打印原因后让事件循环自行结束，不用 expect 把用户砸进崩溃弹窗。
+        let main_win: WindowHandle<RupixApp> = match opened {
+            Ok(handle) => handle,
+            Err(error) => {
+                eprintln!("打开 Rupix 主窗口失败：{error}");
+                return;
+            }
+        };
+        // 建窗闭包同步执行，正常路径下必有实体；取不到同样按环境故障退出。
+        let Some(main) = main_cell.borrow().clone() else {
+            eprintln!("Rupix 主视图未初始化，放弃启动");
+            return;
+        };
 
         // 托盘常驻：截图入口与退出都走这里。
         tray::setup_tray(cx, main_win, main.clone());

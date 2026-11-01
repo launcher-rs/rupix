@@ -40,7 +40,15 @@ pub struct PendingCapture {
 /// - `main`: 主视图实体（裁剪完成后回写预览图 / 取消时恢复状态）。
 /// - `cx`: 调用方上下文（可解引用为 `App`）。
 /// - `pending`: 首帧图片与窗口尺寸。
-pub fn open_overlay(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, pending: PendingCapture) {
+///
+/// # 返回
+/// 浮层成功打开返回 `true`（之后由浮层的完成 / 取消复位状态）；
+/// 建窗失败返回 `false`，调用方需自行把「截取中」状态复位，否则会卡住后续截图。
+pub fn open_overlay(
+    main: Entity<RupixApp>,
+    cx: &mut Context<RupixApp>,
+    pending: PendingCapture,
+) -> bool {
     // 图片尺寸兜底：捕获时没读到就现场解码一次。
     let (img_w, img_h) = if pending.img_w > 0 && pending.img_h > 0 {
         (pending.img_w, pending.img_h)
@@ -74,6 +82,16 @@ pub fn open_overlay(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, pending:
             ..Default::default()
         },
         move |window, cx| {
+            // 浮层被系统直接关掉（Alt+F4 等）时也要复位状态机，
+            // 否则 capturing 永远为 true，之后所有截图入口都会被挡住。
+            let main_for_close = main.clone();
+            window.on_window_should_close(cx, move |_, cx| {
+                main_for_close.update(cx, |state, cx| {
+                    state.capturing = false;
+                    state.set_status(&tr("cap.cancelled"), cx);
+                });
+                true
+            });
             let view = cx.new(|cx| {
                 SelectView::new(
                     window,
@@ -94,8 +112,14 @@ pub fn open_overlay(main: Entity<RupixApp>, cx: &mut Context<RupixApp>, pending:
         },
     );
     match opened {
-        Ok(_) => cap_log("浮层 open_window 成功"),
-        Err(error) => cap_log(&format!("浮层 open_window 失败：{error:?}")),
+        Ok(_) => {
+            cap_log("浮层 open_window 成功");
+            true
+        }
+        Err(error) => {
+            cap_log(&format!("浮层 open_window 失败：{error:?}"));
+            false
+        }
     }
 }
 

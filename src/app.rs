@@ -47,6 +47,8 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 创建失败则试下一候选，保证返回的目录真实可用。
 pub fn default_save_dir() -> PathBuf {
     const SUB: &str = "rupix";
+    // Windows：用户目录图片库优先，OneDrive 接管的图片库次之，桌面兜底。
+    #[cfg(windows)]
     let bases = [
         std::env::var("USERPROFILE")
             .map(|home| PathBuf::from(home).join("Pictures"))
@@ -58,6 +60,19 @@ pub fn default_save_dir() -> PathBuf {
             .map(|home| PathBuf::from(home).join("Desktop"))
             .ok(),
     ];
+    // macOS / Linux：HOME 下同名目录（macOS 的中文目录也已本地化为 Pictures/Desktop），
+    // Linux 若配置了 XDG 图片目录则优先使用。
+    #[cfg(not(windows))]
+    let bases = {
+        let home = std::env::var("HOME").ok();
+        [
+            std::env::var("XDG_PICTURES_DIR").ok().map(PathBuf::from),
+            home.as_deref()
+                .map(|home| PathBuf::from(home).join("Pictures")),
+            home.as_deref()
+                .map(|home| PathBuf::from(home).join("Desktop")),
+        ]
+    };
     for base in bases.into_iter().flatten() {
         if !base.is_dir() {
             continue;
@@ -1377,6 +1392,8 @@ impl RupixApp {
                             .child(name.clone())
                             .on_click(move |_, _, cx| {
                                 set_lang(&code);
+                                // 托盘文案是静态注册的，切换语言后要重建一次菜单。
+                                crate::tray::refresh_labels(cx);
                                 v.update(cx, |this, cx| {
                                     let msg = tr_fmt("lang.switched", &[("lang", &name)]);
                                     this.set_status(&msg, cx);

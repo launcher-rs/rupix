@@ -60,16 +60,6 @@ impl AnnoColor {
     pub const BLACK: Self = Self(30, 30, 30, 255);
     /// 预设白。
     pub const WHITE: Self = Self(255, 255, 255, 255);
-    /// 预设橙。
-    pub const ORANGE: Self = Self(230, 126, 34, 255);
-    /// 预设青。
-    pub const CYAN: Self = Self(0, 188, 212, 255);
-    /// 预设紫。
-    pub const PURPLE: Self = Self(155, 89, 182, 255);
-    /// 预设粉。
-    pub const PINK: Self = Self(233, 30, 99, 255);
-    /// 预设灰。
-    pub const GRAY: Self = Self(127, 140, 141, 255);
 
     /// 转为 rgpui 画布颜色（`paint_path` / 文字颜色用）。
     pub fn to_rgpui(self) -> rgpui::Rgba {
@@ -141,6 +131,7 @@ impl AnnoColor {
     }
 
     /// 文字底色填充（烧录用）：浅色字配半透明黑，深色字配半透明白，避免黑字黑底看不见。
+    #[cfg(test)]
     pub fn text_bg_fill(self) -> Self {
         self.auto_bg().as_text_bg()
     }

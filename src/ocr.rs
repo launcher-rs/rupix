@@ -325,16 +325,22 @@ fn find_trio(dir: &Path) -> Option<ResolvedModels> {
             keys.push(path);
         }
     }
-    if dets.len() == 1 && recs.len() == 1 && keys.len() == 1 {
-        return Some(ResolvedModels {
-            det: dets.pop().expect("长度已确认为 1"),
-            rec: recs.pop().expect("长度已确认为 1"),
-            keys: keys.pop().expect("长度已确认为 1"),
-            label: "自定义组合".to_string(),
-            dir: dir.to_path_buf(),
-        });
+    // 用模式匹配直接取出唯一元素：数量不是恰好各一则整体不认，不需要 unwrap。
+    // 注意绑定的名字不能叫 keys：会把守卫里的 keys（待判空向量）遮蔽成 PathBuf。
+    match (dets.pop(), recs.pop(), keys.pop()) {
+        (Some(det), Some(rec), Some(key_file))
+            if dets.is_empty() && recs.is_empty() && keys.is_empty() =>
+        {
+            Some(ResolvedModels {
+                det,
+                rec,
+                keys: key_file,
+                label: "自定义组合".to_string(),
+                dir: dir.to_path_buf(),
+            })
+        }
+        _ => None,
     }
-    None
 }
 
 /// 在候选位置找第一套可用的外置模型（文件 + 家族，无则返回 `None`）。

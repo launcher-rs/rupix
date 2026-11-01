@@ -34,8 +34,33 @@ pub fn setup_tray(cx: &mut App, main_win: WindowHandle<RupixApp>, main: Entity<R
     cx.set_tray_tooltip(&tr("tray.tooltip"));
     // 托盘图标：品牌蓝取景框 + 山形（`assets/tray.png`，PNG 字节由后端解码）。
     cx.set_tray_icon(Some(include_bytes!("../assets/tray.png")));
+    cx.set_tray_menu(tray_menu());
 
-    cx.set_tray_menu(vec![
+    // 左键单击托盘图标即显示设置窗口（右键弹出菜单由系统负责）。
+    let show_win = main_win;
+    cx.on_tray_icon_event(move |event, cx| {
+        if matches!(event, TrayIconEvent::LeftClick) {
+            show_main_window(cx, show_win);
+        }
+    });
+
+    // 托盘菜单动作分发。
+    cx.on_tray_menu_action(move |id, cx| match id.as_ref() {
+        MENU_REGION => trigger_capture(cx, main_win, main.clone(), false),
+        MENU_FULL => trigger_capture(cx, main_win, main.clone(), true),
+        MENU_PICKER => trigger_picker(cx, main_win, main.clone()),
+        MENU_OPEN_IMAGE => open_image_for_edit_in_app(main.clone(), cx),
+        // 重新打开最近一张截图：不用再走文件对话框挑图。
+        MENU_EDIT_LAST => main.update(cx, |view, cx| view.open_last_for_edit(cx)),
+        MENU_SHOW => show_main_window(cx, main_win),
+        MENU_QUIT => cx.quit(),
+        _ => {}
+    });
+}
+
+/// 托盘菜单项（按当前语言生成；初始化与语言切换后重建共用）。
+fn tray_menu() -> Vec<TrayMenuItem> {
+    vec![
         TrayMenuItem::Action {
             label: tr("tray.region").into(),
             id: MENU_REGION.into(),
@@ -66,28 +91,16 @@ pub fn setup_tray(cx: &mut App, main_win: WindowHandle<RupixApp>, main: Entity<R
             label: tr("tray.quit").into(),
             id: MENU_QUIT.into(),
         },
-    ]);
+    ]
+}
 
-    // 左键单击托盘图标即显示设置窗口（右键弹出菜单由系统负责）。
-    let show_win = main_win;
-    cx.on_tray_icon_event(move |event, cx| {
-        if matches!(event, TrayIconEvent::LeftClick) {
-            show_main_window(cx, show_win);
-        }
-    });
-
-    // 托盘菜单动作分发。
-    cx.on_tray_menu_action(move |id, cx| match id.as_ref() {
-        MENU_REGION => trigger_capture(cx, main_win, main.clone(), false),
-        MENU_FULL => trigger_capture(cx, main_win, main.clone(), true),
-        MENU_PICKER => trigger_picker(cx, main_win, main.clone()),
-        MENU_OPEN_IMAGE => open_image_for_edit_in_app(main.clone(), cx),
-        // 重新打开最近一张截图：不用再走文件对话框挑图。
-        MENU_EDIT_LAST => main.update(cx, |view, cx| view.open_last_for_edit(cx)),
-        MENU_SHOW => show_main_window(cx, main_win),
-        MENU_QUIT => cx.quit(),
-        _ => {}
-    });
+/// 按当前语言刷新托盘提示与菜单（设置页切换语言后调用，避免托盘文案停留在旧语言）。
+///
+/// # 参数
+/// - `cx`: 应用上下文。
+pub fn refresh_labels(cx: &mut App) {
+    cx.set_tray_tooltip(&tr("tray.tooltip"));
+    cx.set_tray_menu(tray_menu());
 }
 
 /// 从 App 上下文触发截图（托盘菜单 / 全局热键共用）。

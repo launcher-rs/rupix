@@ -18,9 +18,6 @@ use crate::{
 #[cfg(target_os = "windows")]
 use crate::i18n::tr_fmt;
 
-/// 文字导出时的默认字号（图片像素）。
-pub const DEFAULT_TEXT_SIZE: f32 = 22.0;
-
 /// 把底图按选区裁剪，并把落在选区内的标注全部烧录，返回最终图片。
 ///
 /// # 参数
@@ -192,7 +189,8 @@ pub fn copy_image_and_file_to_clipboard(png: &[u8], path: &Path) -> Result<(), S
     // 往剪贴板写一段字节（内存所有权成功后移交系统，失败才释放）。
     fn set_bytes(data: &[u8], format: u32) -> Result<(), String> {
         use windows::Win32::{
-            Foundation::HANDLE,
+            // windows 0.62 把 GlobalFree 放在 Foundation，分配 / 加锁仍在 System::Memory。
+            Foundation::{GlobalFree, HANDLE},
             System::{
                 DataExchange::SetClipboardData,
                 Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
@@ -206,12 +204,17 @@ pub fn copy_image_and_file_to_clipboard(png: &[u8], path: &Path) -> Result<(), S
                 .map_err(|e| tr_fmt("export.alloc_fail", &[("e", &format!("{e:?}"))]))?;
             let ptr = GlobalLock(global);
             if ptr.is_null() {
+                // 加锁失败不会再有人接管这块内存，就地释放，避免泄漏。
+                let _ = GlobalFree(Some(global));
                 return Err(tr("export.lock_fail"));
             }
             std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
             let _ = GlobalUnlock(global);
-            SetClipboardData(format, Some(HANDLE(global.0)))
-                .map_err(|e| tr_fmt("export.write_fail", &[("e", &format!("{e:?}"))]))?;
+            if let Err(error) = SetClipboardData(format, Some(HANDLE(global.0))) {
+                // 写入失败时内存仍归本进程，必须显式释放。
+                let _ = GlobalFree(Some(global));
+                return Err(tr_fmt("export.write_fail", &[("e", &format!("{error:?}"))]));
+            }
             // HGLOBAL 是纯句柄（Copy 类型，无 RAII）：成功后内存归系统所有，
             // 此处不再释放，函数返回即完成所有权移交。
             Ok(())
@@ -305,17 +308,33 @@ pub fn copy_file_to_clipboard(_path: &Path) -> Result<(), String> {
     Err(tr("export.unsupported"))
 }
 
-/// 加载系统字体（供文字烧录），按常见 Windows 中文字体依次尝试。
+/// 加载系统字体（供文字烧录），按平台常见中文字体依次尝试。
 ///
 /// # 返回
 /// 成功返回字体，全部缺失返回 `None`（此时导出跳过文字标注）。
 pub fn load_system_font() -> Option<FontVec> {
-    // 微软雅黑优先（Win10/11 自带，中文覆盖齐全），宋黑备用，英文保底。
+    // Windows：微软雅黑优先（Win10/11 自带，中文覆盖齐全），宋黑备用，英文保底。
+    #[cfg(target_os = "windows")]
     const CANDIDATES: &[&str] = &[
         "C:\\Windows\\Fonts\\msyh.ttc",
         "C:\\Windows\\Fonts\\simsun.ttc",
         "C:\\Windows\\Fonts\\simhei.ttf",
         "C:\\Windows\\Fonts\\segoeui.ttf",
+    ];
+    // macOS：苹方为系统默认中文字体，黑体与 Helvetica 依次兜底。
+    #[cfg(target_os = "macos")]
+    const CANDIDATES: &[&str] = &[
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ];
+    // Linux：Noto CJK 是发行版最常见的预装中文字体，文泉驿与 DejaVu 兜底。
+    #[cfg(all(unix, not(target_os = "macos")))]
+    const CANDIDATES: &[&str] = &[
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ];
     for path in CANDIDATES {
         if let Ok(data) = std::fs::read(path) {

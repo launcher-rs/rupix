@@ -83,9 +83,9 @@ pub fn begin_capture(
         // 注意：此处已在实体的单次租借内，直接改 `state`，不要再嵌套 `update`。
         let updated = this
             .update(cx, |state, cx| {
-                state.capturing = false;
                 if fullscreen {
                     // 全屏截图：统一收尾（自动保存 + 按设置复制 / 弹编辑窗 / 闪提示）。
+                    state.capturing = false;
                     let preview = PreviewImage {
                         path: frame_path,
                         w: img_w,
@@ -103,8 +103,10 @@ pub fn begin_capture(
                     state.set_status(&msg, cx);
                 } else {
                     // 区域截图：首帧只做裁剪来源，打开薄遮罩浮层框选。
+                    // 浮层打开期间保持 capturing = true，阻止热键再次触发导致浮层叠加；
+                    // 完成 / 取消时由浮层复位（见 overlay::finish / cancel）。
                     state.set_status(&tr("cap.region_hint"), cx);
-                    open_overlay(
+                    let opened = open_overlay(
                         cx.entity(),
                         cx,
                         PendingCapture {
@@ -115,6 +117,11 @@ pub fn begin_capture(
                             frame_image,
                         },
                     );
+                    if !opened {
+                        // 浮层没打开就没有人来复位状态，这里补上，避免后续截图全被挡住。
+                        state.capturing = false;
+                        state.set_status(&tr("cap.overlay_fail"), cx);
+                    }
                 }
             })
             .is_ok();
@@ -152,9 +159,13 @@ pub fn begin_picker(state: &mut RupixApp, window: &mut Window, cx: &mut Context<
         };
         let updated = this
             .update(cx, |state, cx| {
-                state.capturing = false;
+                // 与区域截图同理：取色浮层打开期间保持 capturing，防止热键叠开第二轮；
+                // 取色完成 / 取消时由浮层复位（见 picker::on_pick / cancel）。
                 state.set_status(&tr("cap.picker_hint"), cx);
-                crate::picker::open_picker(cx.entity(), cx, frame);
+                if !crate::picker::open_picker(cx.entity(), cx, frame) {
+                    state.capturing = false;
+                    state.set_status(&tr("cap.overlay_fail"), cx);
+                }
             })
             .is_ok();
         cap_log(&format!("取色后续处理完成：update_ok={updated}"));

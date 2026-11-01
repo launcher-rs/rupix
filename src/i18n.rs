@@ -973,6 +973,13 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "Capture timed out, please retry"
             }
         }
+        "cap.overlay_fail" => {
+            if zh {
+                "打开截图浮层失败，请重试"
+            } else {
+                "Failed to open the capture overlay, please retry"
+            }
+        }
         "cap.picking" => {
             if zh {
                 "正在取色…"
