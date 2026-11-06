@@ -6,11 +6,11 @@ license = "Apache-2.0"
 
 [dependencies]
 # UI 框架：截图冻结帧推流（screen-capture 特性）与全部窗口能力。
-# 1.6 已包含 Linux 浮层 visual 选择、show=false 隐藏启动、帧同步握手与浮层 Esc 取消的修复。
-rgpui = { version = "1.6", features = ["screen-capture"] }
+# 1.7 修复了滚动越界回弹与到边首个滚轮被吞的问题，并新增向导表单 / 差异查看等组件。
+rgpui = { version = "1.7", features = ["screen-capture"] }
 # Linux 图形后端二选一（wayland / x11），缺省两个都不开时运行时直接 unreachable 崩溃；
 # 注意 rgpui 自身的同名特性是空壳，真正的后端开关在 rgpui-linux，经 rgpui-platform 透传才生效。
-rgpui-platform = { version = "1.6", features = [
+rgpui-platform = { version = "1.7", features = [
   "screen-capture",
   "wayland",
   "x11",

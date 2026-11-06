@@ -6,6 +6,11 @@
 
 后续规划见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
+### Changed
+
+- `rgpui` / `rgpui-platform` 升级到 1.7（滚动越界回弹与到边滚轮丢失修复，新增向导表单 /
+  差异查看器等组件）
+
 ## [0.2.1] - 2026-11-01
 
 ### Added
