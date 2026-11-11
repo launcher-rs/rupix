@@ -926,6 +926,13 @@ fn builtin(lang: &Lang, key: &str) -> Option<&'static str> {
                 "Fullscreen captured {w} × {h} ({note})"
             }
         }
+        "cap.full_fail" => {
+            if zh {
+                "全屏合成失败：{error}"
+            } else {
+                "Fullscreen compose failed: {error}"
+            }
+        }
         "cap.region_hint" => {
             if zh {
                 "已截取，在遮罩上拖拽框选…"

@@ -2,8 +2,9 @@
 //!
 //! 与区域截图同一帧来源：看到的是截取瞬间的静态首帧（1:1 物理像素），
 //! 采样坐标严格按“视图逻辑像素 × 缩放比 = 图片物理像素”换算。
+//! 多显示器时每块屏各开一层取色浮层，可在任意屏幕上取色。
 
-use std::sync::Arc;
+use std::{path::PathBuf, rc::Rc, sync::Arc};
 
 use image::RgbaImage;
 use rgpui::{
@@ -16,6 +17,7 @@ use crate::{
     app::RupixApp,
     capture::{CapturedFrame, cap_log},
     i18n::{tr, tr_fmt},
+    overlay::OverlaySession,
 };
 
 /// 放大镜边长像素数（奇数，保证中心唯一）。
@@ -25,20 +27,44 @@ const MAG_Z: f32 = 14.0;
 /// 放大镜面板总边长（逻辑像素）。
 const MAG_W: f32 = MAG_N as f32 * MAG_Z;
 
-/// 打开取色浮层。
+/// 在每块屏上各打开一层取色浮层（多显示器可分别在任意屏幕取色）。
 ///
 /// # 参数
 /// - `main`: 设置窗口实体（复制成功后回写状态）。
 /// - `cx`: 调用方上下文。
-/// - `frame`: 首帧图片与窗口尺寸。
+/// - `frames`: 每块屏的首帧图片与显示器边界。
 ///
 /// # 返回
-/// 浮层成功打开返回 `true`（之后由取色完成 / 取消复位状态）；
-/// 建窗失败返回 `false`，调用方需自行复位「截取中」状态。
-pub fn open_picker(
+/// 至少成功打开一层返回 `true`（之后由取色完成 / 取消复位状态）；
+/// 全部建窗失败返回 `false`，调用方需自行复位「截取中」状态。
+pub fn open_pickers(
+    main: Entity<RupixApp>,
+    cx: &mut Context<RupixApp>,
+    frames: Vec<CapturedFrame>,
+) -> bool {
+    if frames.is_empty() {
+        return false;
+    }
+    let session = OverlaySession::new();
+    let mut opened = 0;
+    for (index, frame) in frames.into_iter().enumerate() {
+        if session.is_finished() {
+            break;
+        }
+        if open_picker(main.clone(), cx, frame, index, session.clone()) {
+            opened += 1;
+        }
+    }
+    opened > 0
+}
+
+/// 打开单块屏的取色浮层。
+fn open_picker(
     main: Entity<RupixApp>,
     cx: &mut Context<RupixApp>,
     frame: CapturedFrame,
+    index: usize,
+    session: Rc<OverlaySession>,
 ) -> bool {
     // 图片尺寸兜底：捕获时没读到就现场解码一次。
     let (img_w, img_h) = if frame.img_w > 0 && frame.img_h > 0 {
@@ -47,9 +73,13 @@ pub fn open_picker(
         image::image_dimensions(&frame.frame_path).unwrap_or((800, 600))
     };
     let display_bounds = frame.display_bounds;
+    let display_id = frame.display_id;
     let frame_path = frame.frame_path;
     let frame_image = frame.frame_image;
-    cap_log(&format!("取色浮层打开：img={img_w}x{img_h}"));
+    cap_log(&format!(
+        "取色浮层打开：屏 {index} img={img_w}x{img_h} id={display_id:?}"
+    ));
+    let session_for_build = session.clone();
     let opened = cx.open_window(
         WindowOptions {
             // 无边框置顶浮层，与区域选择浮层同规格（Windows 下必须 Fullscreen）。
@@ -57,6 +87,8 @@ pub fn open_picker(
             // 而 X11 上的 ARGB visual 在 alpha 合成不可用时会让浮层整体不可见。
             titlebar: None,
             window_bounds: Some(WindowBounds::Fullscreen(display_bounds)),
+            // 指定目标显示器，副屏才能在自己的物理边界上铺开。
+            display_id,
             window_background: WindowBackgroundAppearance::Opaque,
             kind: WindowKind::Overlay,
             focus: true,
@@ -64,13 +96,16 @@ pub fn open_picker(
             ..Default::default()
         },
         move |window, cx| {
-            // 浮层被系统直接关掉（Alt+F4 等）时复位状态机，避免卡在「截取中」。
+            // 浮层被系统直接关掉（Alt+F4 等）时结束整轮并复位状态机，避免卡在「截取中」。
             let main_for_close = main.clone();
+            let session_for_close = session_for_build.clone();
             window.on_window_should_close(cx, move |_, cx| {
-                main_for_close.update(cx, |state, cx| {
-                    state.capturing = false;
-                    state.set_status(&tr("cap.cancelled"), cx);
-                });
+                if session_for_close.finish(Some(index), cx) {
+                    main_for_close.update(cx, |state, cx| {
+                        state.capturing = false;
+                        state.set_status(&tr("cap.cancelled"), cx);
+                    });
+                }
                 true
             });
             let view = cx.new(|cx| {
@@ -83,6 +118,8 @@ pub fn open_picker(
                     img_h,
                     display_bounds,
                     frame_image.clone(),
+                    session_for_build.clone(),
+                    index,
                 )
             });
             // 打开即聚焦根视图并激活窗口，使 Esc 立即可用。
@@ -93,7 +130,10 @@ pub fn open_picker(
         },
     );
     match opened {
-        Ok(_) => true,
+        Ok(handle) => {
+            session.register(index, *handle);
+            true
+        }
         Err(error) => {
             cap_log(&format!("取色浮层打开失败：{error:?}"));
             false
@@ -106,7 +146,7 @@ struct PickerView {
     /// 设置窗口实体（回写复制状态）。
     main: Entity<RupixApp>,
     /// 首帧图片路径（浮层背景显示用）。
-    frame_path: std::path::PathBuf,
+    frame_path: PathBuf,
     /// 预解码的首帧（背景同步显示用）。
     frame_image: Option<Arc<rgpui::RenderImage>>,
     /// 采样用底图像素（None 时取色不可用，直接取消）。
@@ -123,6 +163,10 @@ struct PickerView {
     cursor: Option<(f32, f32)>,
     /// 根视图焦点（Esc 取消用）。
     focus_handle: FocusHandle,
+    /// 本轮多屏取色浮层的共享会话。
+    session: Rc<OverlaySession>,
+    /// 本浮层对应的屏序号（会话内唯一）。
+    index: usize,
 }
 
 impl PickerView {
@@ -132,11 +176,13 @@ impl PickerView {
         _window: &mut Window,
         cx: &mut Context<Self>,
         main: Entity<RupixApp>,
-        frame_path: std::path::PathBuf,
+        frame_path: PathBuf,
         img_w: u32,
         img_h: u32,
         display_bounds: Bounds<Pixels>,
         frame_image: Option<Arc<rgpui::RenderImage>>,
+        session: Rc<OverlaySession>,
+        index: usize,
     ) -> Self {
         // 采样直接读底图像素；读不到则取色无意义，打开后第一次移动即提示并关闭。
         let img = image::open(&frame_path)
@@ -153,6 +199,8 @@ impl PickerView {
             view_h: display_bounds.size.height.as_f32(),
             cursor: None,
             focus_handle: cx.focus_handle(),
+            session,
+            index,
         }
     }
 
@@ -181,9 +229,15 @@ impl PickerView {
         cx.notify();
     }
 
-    /// 左键点击：复制当前颜色 HEX 到剪贴板并关闭。
+    /// 左键点击：复制当前颜色 HEX 到剪贴板并关闭本轮所有取色浮层。
     fn on_pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 本轮已在别的屏上取过色：只关自己，避免重复写剪贴板 / 重复回状态。
+        if self.session.is_finished() {
+            window.remove_window();
+            return;
+        }
         let main = self.main.clone();
+        self.session.finish(Some(self.index), cx);
         match self.sample() {
             Some((r, g, b)) => {
                 let hex = rgb_to_hex(r, g, b);
@@ -207,8 +261,13 @@ impl PickerView {
         cx.refresh_windows();
     }
 
-    /// 取消取色：复位状态机并关闭浮层。
+    /// 取消取色：复位状态机并关闭本轮所有取色浮层。
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.session.is_finished() {
+            window.remove_window();
+            return;
+        }
+        self.session.finish(Some(self.index), cx);
         let main = self.main.clone();
         main.update(cx, |state, cx| {
             state.capturing = false;

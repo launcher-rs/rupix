@@ -40,8 +40,8 @@ cargo build --profile size       # 打发布包使用的档位（体积最小）
 ### 3.1 正式版本：打 tag 自动触发
 
 ```bash
-git tag v0.2.1
-git push origin v0.2.1
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 - Release 名与 tag 同名，**不碰 `latest`**，编译档固定 `size`；

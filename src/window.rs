@@ -15,16 +15,6 @@ pub struct CaptureWindow {
 }
 
 impl CaptureWindow {
-    /// 矩形宽（物理像素）。
-    pub fn width(&self) -> i32 {
-        (self.rect.2 - self.rect.0).max(0)
-    }
-
-    /// 矩形高（物理像素）。
-    pub fn height(&self) -> i32 {
-        (self.rect.3 - self.rect.1).max(0)
-    }
-
     /// 点是否落在窗口内（含边界）。
     pub fn contains(&self, x: i32, y: i32) -> bool {
         x >= self.rect.0 && x <= self.rect.2 && y >= self.rect.1 && y <= self.rect.3
@@ -217,7 +207,7 @@ mod tests {
             title: "t".to_string(),
             rect: (10, 20, 110, 120),
         };
-        assert_eq!((w.width(), w.height()), (100, 100));
+        assert_eq!((w.rect.2 - w.rect.0, w.rect.3 - w.rect.1), (100, 100));
         assert!(w.contains(10, 20));
         assert!(w.contains(110, 120));
         assert!(!w.contains(9, 20));
@@ -225,6 +215,9 @@ mod tests {
             title: "e".to_string(),
             rect: (5, 5, 5, 5),
         };
-        assert_eq!((empty.width(), empty.height()), (0, 0));
+        assert_eq!(
+            (empty.rect.2 - empty.rect.0, empty.rect.3 - empty.rect.1),
+            (0, 0)
+        );
     }
 }
