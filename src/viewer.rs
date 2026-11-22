@@ -1785,12 +1785,8 @@ fn move_shape_clamped(shape: &mut Shape, delta: (f32, f32), img_w: f32, img_h: f
 /// `paint_path` 使用窗口坐标，不会自动叠加 canvas 自身的布局偏移。
 /// 因此必须使用 rgpui 在绘制回调里传入的 `bounds.origin` 作为图片容器真实左上角，
 /// 避免手写工具栏高度或图片区居中偏移时漏算。
-fn shape_path(
-    shape: &Shape,
-    zoom: f32,
-    origin_x: f32,
-    origin_y: f32,
-) -> Option<(Path<Pixels>, Rgba)> {
+// rgpui 1.8.1 起 Path 移除了 Pixels 泛型参数，直接返回无泛型的 Path。
+fn shape_path(shape: &Shape, zoom: f32, origin_x: f32, origin_y: f32) -> Option<(Path, Rgba)> {
     let pt = |x: f32, y: f32| point(px(origin_x + x * zoom), px(origin_y + y * zoom));
     let stroker = |width: f32| PathBuilder::stroke(px((width * zoom).max(1.0)));
     match shape {
